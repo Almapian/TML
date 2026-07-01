@@ -5,82 +5,82 @@ TEMPORAL EDA FULL LOOP
 01_RICHMOND  (Richmond Lock)
   Observed  min=-1.250  mean=2.054  max=17.851 m
   block:  2009-08-24 → 2010-08-14  (51,046 rows, 354 days)
-  ADF: stationary       KPSS: non-stationary  [28 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): stationary  [48 s]
 
 02_CHELSEA  (Chelsea Bridge)
   Observed  min=-0.961  mean=3.164  max=11.910 m
   block:  2014-02-20 → 2016-02-18  (104,819 rows, 728 days)
-  ADF: stationary       KPSS: non-stationary  [26 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [36 s]
 
 03_LONDONBRIDGE  (London Bridge (Tower Pier))
   Observed  min=-2.100  mean=3.698  max=10.740 m
   block:  2014-07-09 → 2015-11-10  (70,452 rows, 489 days)
-  ADF: stationary       KPSS: non-stationary  [25 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [33 s]
 
 04_CHARLTON  (Charlton (Cory's))
   Observed  min=-2.350  mean=3.762  max=10.390 m
   block:  2013-02-06 → 2013-07-31  (25,282 rows, 176 days)
-  ADF: stationary       KPSS: stationary  [24 s]
+  ADF: stationary       KPSS(c): stationary       KPSS(ct): stationary  [32 s]
 
 05_NORTHWOOLWICH  (North Woolwich (Silvertown))
   Observed  min=-2.170  mean=3.742  max=8.770 m
   block:  2014-05-20 → 2015-04-12  (47,161 rows, 328 days)
-  ADF: stationary       KPSS: non-stationary  [27 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): stationary  [31 s]
 
 06_ERITH  (Erith (Erith Pier))
   Observed  min=-3.680  mean=3.750  max=13.682 m
   block:  2013-09-29 → 2013-12-13  (10,827 rows, 75 days)  [SHORT BLOCK]
-  ADF: stationary       KPSS: non-stationary  [22 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [25 s]
 
 07_TILBURY  (Tilbury (NHCT))
   Observed  min=-0.469  mean=3.412  max=8.180 m
   block:  2017-06-10 → 2019-06-11  (105,258 rows, 731 days)
-  ADF: stationary       KPSS: non-stationary  [28 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [36 s]
 
 08_GRAVESEND  (Gravesend (Denton))
   Observed  min=-0.445  mean=3.382  max=7.967 m
   block:  2018-07-14 → 2022-08-25  (216,399 rows, 1503 days)
-  ADF: stationary       KPSS: non-stationary  [55 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [64 s]
 
 09a_CORYTON_THAMESHAVEN  (Coryton (Thameshaven))
   Observed  min=-0.355  mean=3.333  max=7.395 m
   block:  2018-01-01 → 2021-08-13  (190,140 rows, 1320 days)
-  ADF: stationary       KPSS: non-stationary  [36 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): stationary  [43 s]
 
 09b_CORYTON_NO5JETTY  (Coryton (No5 Jetty))
   Observed  min=-0.720  mean=3.061  max=7.969 m
   block:  2014-08-11 → 2014-12-09  (17,286 rows, 120 days)
-  ADF: stationary       KPSS: non-stationary  [14 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [26 s]
 
 09c_CORYTON_HOLEHAVEN  (Coryton (Holehaven))
   Observed  min=0.205  mean=3.260  max=11.463 m
   block:  2016-05-07 → 2017-11-30  (82,330 rows, 572 days)
-  ADF: stationary       KPSS: non-stationary  [7 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): stationary  [9 s]
 
 10_SOUTHEND  (Southend Pier)
   Observed  min=-0.494  mean=3.070  max=7.036 m
   block:  2016-07-18 → 2022-08-25  (320,956 rows, 2229 days)
-  ADF: stationary       KPSS: non-stationary  [70 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [84 s]
 
 11_SHIVERINGSANDS  (Shivering Sands (F1 Pile))
   Observed  min=-0.992  mean=2.858  max=10.210 m
   block:  2019-10-13 → 2022-03-02  (125,380 rows, 871 days)
-  ADF: stationary       KPSS: non-stationary  [27 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [38 s]
 
 12a_MARGATE_HARBOUR  (Margate Harbour)
   Observed  min=-0.971  mean=2.653  max=6.519 m
   block:  2016-03-27 → 2016-11-24  (34,816 rows, 242 days)
-  ADF: stationary       KPSS: non-stationary  [26 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [27 s]
 
 12b_MARGATE_PILE  (Margate Pile)
   Observed  min=-0.275  mean=2.696  max=11.982 m
   block:  2020-01-01 → 2021-12-31  (105,264 rows, 731 days)
-  ADF: stationary       KPSS: non-stationary  [17 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [13 s]
 
 13_WALTON  (Walton on the Naze)
   Observed  min=-1.883  mean=2.282  max=6.182 m
   block:  2018-03-09 → 2020-06-29  (121,384 rows, 843 days)
-  ADF: stationary       KPSS: non-stationary  [32 s]
+  ADF: stationary       KPSS(c): non-stationary   KPSS(ct): non-stationary  [34 s]
 
 ─────────────────────────────────────────────────────────────────
 Done.  16 gauges processed.
