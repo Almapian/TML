@@ -1,8 +1,9 @@
-# Tidal Analysis and Prediction — Southend Pier
+# Water Level Forecasting at Southend Pier
 
-MSc dissertation code: forecasting water level at Southend Pier on the Thames Estuary,
-comparing classical harmonic analysis (UTide) with neural sequence models, in three stages
-of increasing complexity.
+Code accompanying Al-Fatihi Abdulmalik's dissertation for the MSc in Spatio-temporal Analytics and Big Data Mining: Water Level Forecasting in the Tidal Thames. An evaluation of neural network architectures, from baseline to harmonic-informed design.
+
+The aim is to forecast water level at Southend Pier, a gauge along the River Thames,
+comparing classical harmonic analysis (UTide) with neural sequence models. The code is split into three stages:
 
 - **Stage 1** — single-step baselines: persistence, UTide, MLP / RNN / LSTM.
 - **Stage 2** — direct multi-horizon forecasting (10 min → 1 week) with an LSTM encoder,
@@ -109,7 +110,7 @@ python models/plot_stage3.py     # stage 3 figures, including SHAP
 
 Figures are written to `report_images/` as PDFs. Each plot script has a `FIGURES_TO_PLOT`
 list — trim it to redraw just one figure. A plot script never trains: if a checkpoint is
-missing it stops and tells you which training script to run.
+missing, it stops and tells you which training script to run.
 
 `plot_stage3.py` reuses the saved SHAP tables by default; set `RECOMPUTE_SHAP = True` to
 re-run `GradientExplainer` from the model itself.
