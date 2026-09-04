@@ -2,6 +2,8 @@
 
 Code accompanying Al-Fatihi Abdulmalik's dissertation for the MSc in Spatio-temporal Analytics and Big Data Mining: Water Level Forecasting in the Tidal Thames. An evaluation of neural network architectures, from baseline to harmonic-informed design.
 
+![Study region and relevant gauges](report_images/gauge.jpg)
+
 The aim is to forecast water level at Southend Pier, a gauge along the River Thames,
 comparing classical harmonic analysis (UTide) with neural sequence models. The code is split into three stages:
 
