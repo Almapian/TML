@@ -1,5 +1,39 @@
+# --- working data (large, regenerable; the published copy is Data/southend_pier_data.csv) ---
 2_Deliverables/
 3_Cleaned/
-.Rproj.user
-rosm.cache/
+
+# Only the Southend Pier gauge record is published. The meteorological covariates are
+# kept local because of their size -- see the README for how to obtain them
+# (src/download_meteo_data.py re-downloads them from ERA5/NRFA).
+Data/meteo/
+
+# --- generated artefacts ---
+# outputs/ is scratch: metrics CSVs, model checkpoints, diagnostic logs and PNGs
 outputs/
+# basemap tile cache for EDA/tide_gauge_vis.R
+rosm.cache/
+coverage_heatmap.png
+
+# note: report_images/ is deliberately NOT ignored -- the dissertation figures are tracked
+
+# --- notebooks superseded by scripts (kept on disk for reference, not in the repo) ---
+src/data.ipynb
+src/meteo_data.ipynb
+src/meteo_data_download_colab (1).ipynb
+EDA/utide_residuals.ipynb
+
+# --- R session state and IDE ---
+.RData
+.Rhistory
+.Rproj.user
+
+# --- python ---
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# --- credentials (cdsapi/CDS token; never commit these) ---
+.cdsapirc
+*.env

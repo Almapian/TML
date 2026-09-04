@@ -1,0 +1,30 @@
+# Python dependencies for the tidal analysis and prediction pipeline.
+#   pip install -r utils/requirements.txt
+#
+# Versions are the lower bounds this project was developed against, not exact pins --
+# the modelling scripts were run on Python 3.12 locally (CPU) and on Colab (T4 GPU).
+
+# --- core ---
+numpy>=1.26
+pandas>=2.1
+scipy>=1.11
+matplotlib>=3.8
+
+# --- modelling (models/, utils/models/) ---
+torch>=2.1                # install the CUDA build from pytorch.org to train on a GPU
+UTide>=0.3.1              # harmonic tidal analysis (the UTide baseline and decoder input)
+shap>=0.44                # stage 3 interpretability
+
+# --- exploratory analysis (EDA/) ---
+statsmodels>=0.14         # ADF/KPSS, ACF/PACF, seasonal decomposition
+
+# --- data ingestion (src/) ---
+openpyxl>=3.1             # reading the raw per-gauge .xlsx deliverables
+requests>=2.31            # NRFA rainfall/discharge API
+cdsapi>=0.6               # ERA5 pressure/wind download (needs a CDS account + ~/.cdsapirc)
+xarray>=2023.12           # reading the downloaded ERA5 netCDF chunks
+netCDF4>=1.6
+
+# --- notebooks ---
+jupyter>=1.0
+ipykernel>=6.29
