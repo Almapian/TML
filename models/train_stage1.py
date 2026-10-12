@@ -15,6 +15,12 @@ Outputs -- tables under outputs/initial_outputs/ (gitignored scratch):
     initial_history.json       training curves, for plot_stage1.py
 and weights under models/checkpoints/ (tracked):
     initial_{mlp,rnn,lstm}.pt  model checkpoints
+
+Set GAUGE in the CONFIG block to run on another gauge (see config.GAUGES): its tables go to
+outputs/<gauge>/ and its weights to models/checkpoints/<gauge>/, so Southend's are never
+touched. Every training run writes a per-epoch resume file under outputs/_resume/, so an
+interrupted run (sleep, crash, reboot) continues from its last completed epoch when the
+script is simply re-run.
 """
 # %% Bootstrap -- make `utils` importable whether run as a file or cell-by-cell
 import pathlib
@@ -35,6 +41,12 @@ from utils.models import datasets, training
 from utils.models.architectures import MLP, LSTMModel, RNNModel
 
 # %% ------------------------------------------------------------------ CONFIG
+GAUGE = C.from_env('TIDAL_GAUGE', 'southend')  # 'southend' or 'richmond' (config.GAUGES); run_gauge.py sets it
+# UTide comparator fit: None = the gauge's own stride (config.GAUGES, 1 = full resolution,
+# measured peak ~8.7 GB for this 17-year train+val fit). 6 (hourly) roughly quarters that and
+# moves the UTide baseline by ~1 mm.
+UTIDE_FIT_STRIDE = None
+
 LOOKBACK = C.LOOKBACK          # 96 -> 16h of 10-minute steps
 TRAIN_STRIDE = C.TRAIN_STRIDE  # subsample training windows only
 BATCH_SIZE = 1024
@@ -45,14 +57,16 @@ LR = 1e-3
 LOAD_FROM_CHECKPOINT = True    # False forces a full retrain even if checkpoints exist
 RUN_ROLLOUT = True             # recursive multi-step evaluation (section 13 of the notebook)
 
-OUTPUT_DIR = paths.ensure_dir(paths.STAGE1_OUTPUT_DIR)      # tables (gitignored scratch)
-CHECKPOINT_DIR = paths.ensure_dir(paths.CHECKPOINTS_DIR)     # model weights (tracked)
+GAUGE_INFO = C.gauge_info(GAUGE)
+OUTPUT_DIR = paths.ensure_dir(paths.stage_output_dir(1, GAUGE))   # tables (gitignored scratch)
+CHECKPOINT_DIR = paths.ensure_dir(paths.checkpoint_dir(GAUGE))     # model weights (tracked)
+print(f"gauge: {GAUGE_INFO['label']}")
 DEVICE = C.describe_device()
 C.set_seed()
 torch.backends.cudnn.benchmark = True
 
 # %% Data ------------------------------------------------------------------
-data = datasets.prepare_stage1(DEVICE, lookback=LOOKBACK, train_stride=TRAIN_STRIDE)
+data = datasets.prepare_stage1(DEVICE, lookback=LOOKBACK, train_stride=TRAIN_STRIDE, gauge=GAUGE)
 
 # %% Baseline: persistence -- y(t+1) = y(t), flagged targets masked out ------
 results = []
@@ -65,7 +79,8 @@ for split_name, X_raw, y_raw, flg in [('val', data.X_val, data.y_val, data.flag_
 # %% Baseline: UTide harmonic ----------------------------------------------
 # Fit on train+val (2004-2020) -- stage 1 uses UTide purely as a comparator, so unlike
 # stages 2/3 it is allowed the validation period too. Flagged points excluded from the fit.
-coef = datasets.fit_utide(data.df, end=C.VAL_END)
+coef = datasets.fit_utide(data.df, end=C.VAL_END, lat=GAUGE_INFO['lat'],
+                          stride=UTIDE_FIT_STRIDE or GAUGE_INFO['utide_fit_stride'])
 tide_test = datasets.reconstruct_utide(data.time_test, coef, min_snr=2)
 rmse_u, mae_u = training.masked_rmse_mae(tide_test, data.y_test, data.flag_test)
 results.append({'model': 'UTide', 'split': 'test', 'rmse_m': rmse_u, 'mae_m': mae_u})
@@ -85,12 +100,12 @@ for name, factory in model_factories.items():
     model = factory().to(DEVICE)
     checkpoint_path = CHECKPOINT_DIR / f'initial_{name.lower()}.pt'
 
-    def _train(m, name=name):
+    def _train(m, name=name, checkpoint_path=checkpoint_path):
         print(f"\n=== Training {name} ===")
         return training.train_model(
             m, predict_flat, data.train_tensors, data.val_tensors,
             epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR, patience=PATIENCE,
-            label=name, device=DEVICE,
+            label=name, device=DEVICE, resume_path=training.partial_path(checkpoint_path),
         )
 
     model, history = training.load_or_train(model, checkpoint_path, _train, label=name,
@@ -119,10 +134,9 @@ print(f"saved {metrics_path}")
 # swept anywhere, so re-instantiating the same class is enough to load these back.
 for name, model in trained.items():
     checkpoint_path = CHECKPOINT_DIR / f'initial_{name.lower()}.pt'
-    torch.save({'model_state_dict': model.state_dict(),
+    training.save_checkpoint({'model_state_dict': model.state_dict(),
                 'config': {'lookback': LOOKBACK},
-                'scaler': {'mean': data.train_mean, 'std': data.train_std}}, checkpoint_path)
-    print(f"saved {checkpoint_path}")
+                'scaler': {'mean': data.train_mean, 'std': data.train_std}}, checkpoint_path, LOAD_FROM_CHECKPOINT)
 
 training.save_history(histories, str(OUTPUT_DIR / 'initial_history.json'))
 

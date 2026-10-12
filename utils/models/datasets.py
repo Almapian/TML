@@ -18,7 +18,7 @@ import utide
 from .. import paths
 from .config import (DAILY_GRID_BUFFER_DAYS, GAUGE_USECOLS, LOOKBACK, METEO_LOOKBACK_HOURS,
                      RIVER_LOOKBACK_DAYS, SITE_LAT, STEP, TRAIN_END, TRAIN_STRIDE, UTIDE_EXT_DAYS,
-                     VAL_END)
+                     VAL_END, gauge_info)
 from .windowing import MeteoGrids, build_windows, build_windows_multi, build_windows_stage3
 
 
@@ -26,7 +26,8 @@ from .windowing import MeteoGrids, build_windows, build_windows_multi, build_win
 # Shared loading / splitting / UTide
 # ======================================================================================
 def load_gauge_df(path=None, verbose=True):
-    """Southend Pier 10-minute record with a single combined `is_flagged` column."""
+    """A gauge's 10-minute record (Southend Pier by default) with a single combined
+    `is_flagged` column."""
     path = paths.SOUTHEND_CSV if path is None else path
     df = pd.read_csv(path, usecols=GAUGE_USECOLS, parse_dates=['DateTime'])
     df = df.sort_values('DateTime').reset_index(drop=True)
@@ -55,21 +56,34 @@ def split_chronological(df, train_end=TRAIN_END, val_end=VAL_END, verbose=True):
     return train_df, val_df, test_df
 
 
-def fit_utide(df, start=None, end=TRAIN_END, lat=SITE_LAT, verbose=True):
+def fit_utide(df, start=None, end=TRAIN_END, lat=SITE_LAT, stride=1, verbose=True):
     """Solve for harmonic constituents over [start, end), excluding flagged points so the
-    fit never learns from UTide's own past reconstruction."""
+    fit never learns from UTide's own past reconstruction.
+
+    `stride` > 1 fits on every `stride`-th 10-minute slot of the clock (6 -> on the hour
+    only). Memory scales with the number of rows fitted -- see GAUGES in config.py for why
+    stride 6 is safe and what it changes.
+    """
     mask = df['DateTime'] < end
     if start is not None:
         mask &= df['DateTime'] >= start
+    if stride > 1:
+        minutes = df['DateTime'].astype('int64') // 60_000_000_000
+        mask &= (minutes % (10 * stride)) == 0
 
     fit_series = df.loc[mask, 'Observed_ODN'].copy()
     fit_series[df.loc[mask, 'is_flagged']] = np.nan
-    coef = utide.solve(df.loc[mask, 'DateTime'], fit_series, lat=lat, method='ols', conf_int='none')
+    coef = utide.solve(df.loc[mask, 'DateTime'], fit_series, lat=lat, method='ols', conf_int='none',
+                       verbose=False)
 
     if verbose:
-        print(f"UTide fit on {mask.sum():,} rows "
-              f"({(~np.isnan(fit_series)).sum():,} after excluding flagged points).")
+        print(f"UTide fit on {mask.sum():,} rows (stride {stride}; "
+              f"{(~np.isnan(fit_series)).sum():,} after excluding flagged points), "
+              f"{len(coef.name)} constituents.")
     return coef
+
+
+RECON_CHUNK = 200_000   # timestamps per utide.reconstruct call
 
 
 def reconstruct_utide(index, coef, min_snr=0, min_pe=0):
@@ -81,8 +95,16 @@ def reconstruct_utide(index, coef, min_snr=0, min_pe=0):
     through constituent selection. Stage 1 uses UTide only as a baseline and kept the
     library default (min_SNR=2), so it passes that explicitly.
     """
-    recon = utide.reconstruct(pd.DatetimeIndex(index), coef, min_SNR=min_snr, min_PE=min_pe, verbose=False)
-    return np.asarray(recon['h'], dtype=np.float32)
+    # Reconstructed in chunks: utide builds a (n_times x n_constituents) complex matrix, so
+    # one call over the full 21-year record costs several GB. Reconstruction is pointwise,
+    # so the chunked result is identical.
+    index = pd.DatetimeIndex(index)
+    out = np.empty(len(index), dtype=np.float32)
+    for start in range(0, len(index), RECON_CHUNK):
+        recon = utide.reconstruct(index[start:start + RECON_CHUNK], coef,
+                                  min_SNR=min_snr, min_PE=min_pe, verbose=False)
+        out[start:start + RECON_CHUNK] = recon['h']
+    return out
 
 
 def to_tensor(a, device, dtype=torch.float32):
@@ -117,9 +139,10 @@ class Stage1Data:
     test_tensors: dict
 
 
-def prepare_stage1(device, lookback=LOOKBACK, train_stride=TRAIN_STRIDE, data_path=None, verbose=True):
+def prepare_stage1(device, lookback=LOOKBACK, train_stride=TRAIN_STRIDE, data_path=None, verbose=True,
+                   gauge='southend'):
     """Stage 1: single-step windows, train-only scaler, tensors on `device`."""
-    df = load_gauge_df(data_path, verbose=verbose)
+    df = load_gauge_df(data_path or gauge_info(gauge)['csv'], verbose=verbose)
     train_df, val_df, test_df = split_chronological(df, verbose=verbose)
 
     X_train, y_train, flag_train, time_train = build_windows(train_df, lookback)
@@ -181,12 +204,16 @@ class Stage2Data:
 
 
 def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_STRIDE,
-                   data_path=None, verbose=True):
+                   data_path=None, verbose=True, gauge='southend', utide_fit_stride=None):
     """Stage 2: UTide fit on train only, reconstructed across the full span and used both
-    as the decoder input feature and as the standalone UTide comparator."""
-    df = load_gauge_df(data_path, verbose=verbose)
+    as the decoder input feature and as the standalone UTide comparator.
 
-    coef = fit_utide(df, end=TRAIN_END, verbose=verbose)
+    `utide_fit_stride=None` uses the gauge's default from config.GAUGES."""
+    info = gauge_info(gauge)
+    stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
+    df = load_gauge_df(data_path or info['csv'], verbose=verbose)
+
+    coef = fit_utide(df, end=TRAIN_END, lat=info['lat'], stride=stride, verbose=verbose)
     df['utide_recon'] = reconstruct_utide(df['DateTime'], coef)
     if verbose:
         print(f"Reconstructed {len(df):,} rows across the full span.")
@@ -234,13 +261,17 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
 
 
 def prepare_stage2_reduced(device, df, train_start, horizon_steps, lookback=LOOKBACK,
-                           train_stride=TRAIN_STRIDE, name='reduced'):
+                           train_stride=TRAIN_STRIDE, name='reduced', gauge='southend',
+                           utide_fit_stride=None):
     """One scenario of stage 2's training-data-volume ablation: UTide refit on the reduced
     window, and val/test windows rebuilt against that refit (only the observed targets are
     unaffected), with a scaler fit on the reduced training data alone."""
+    info = gauge_info(gauge)
+    stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
     scen_df = df.copy()
     scen_df['utide_recon'] = reconstruct_utide(
-        scen_df['DateTime'], fit_utide(scen_df, start=train_start, end=TRAIN_END, verbose=False))
+        scen_df['DateTime'], fit_utide(scen_df, start=train_start, end=TRAIN_END, lat=info['lat'],
+                                       stride=stride, verbose=False))
 
     tr_df = scen_df[(scen_df['DateTime'] >= train_start) & (scen_df['DateTime'] < TRAIN_END)].reset_index(drop=True)
     va_df = scen_df[(scen_df['DateTime'] >= TRAIN_END) & (scen_df['DateTime'] < VAL_END)].reset_index(drop=True)
@@ -275,8 +306,9 @@ def prepare_stage2_reduced(device, df, train_start, horizon_steps, lookback=LOOK
 # ======================================================================================
 # Stage 3
 # ======================================================================================
-def load_meteo(meteo_dir=None, verbose=True):
-    """The four consolidated meteo/river series, Southend Pier / Kingston catchment."""
+def load_meteo(meteo_dir=None, verbose=True, site='Southend Pier'):
+    """The four consolidated meteo/river series: ERA5 pressure/wind at `site` (a column
+    prefix in the consolidated CSVs) and the Kingston-catchment rainfall/discharge."""
     meteo_dir = paths.METEO_DIR if meteo_dir is None else meteo_dir
 
     if not (meteo_dir / 'pressure_all_gauges.csv').exists():
@@ -287,9 +319,9 @@ def load_meteo(meteo_dir=None, verbose=True):
             f"Stages 1 and 2 do not need them -- only stage 3 does.")
 
     pressure = pd.read_csv(meteo_dir / 'pressure_all_gauges.csv', parse_dates=['valid_time'])
-    pressure = pressure.rename(columns={'Southend Pier_msl': 'msl_pa'})
+    pressure = pressure.rename(columns={f'{site}_msl': 'msl_pa'})
     wind = pd.read_csv(meteo_dir / 'wind_all_gauges.csv', parse_dates=['valid_time'])
-    wind = wind.rename(columns={'Southend Pier_u10': 'u10', 'Southend Pier_v10': 'v10'})
+    wind = wind.rename(columns={f'{site}_u10': 'u10', f'{site}_v10': 'v10'})
     rainfall = pd.read_csv(meteo_dir / 'rainfall_kingston_catchment.csv', parse_dates=['date'])
     discharge = pd.read_csv(meteo_dir / 'river_discharge_kingston.csv', parse_dates=['date'])
 
@@ -388,17 +420,24 @@ class Stage3Data:
     train_tensors_tideonly: dict = field(default_factory=dict)
     val_tensors_tideonly: dict = field(default_factory=dict)
     test_tensors_tideonly: dict = field(default_factory=dict)
+    utide_lat: float = SITE_LAT       # carried so the reduced-training refits match
+    utide_fit_stride: int = 1
 
 
 def prepare_stage3(device, horizon_steps, decoder_seq_steps, target_slice, lookback=LOOKBACK,
-                   train_stride=TRAIN_STRIDE, data_path=None, meteo_dir=None, verbose=True):
+                   train_stride=TRAIN_STRIDE, data_path=None, meteo_dir=None, verbose=True,
+                   gauge='southend', utide_fit_stride=None):
     """Stage 3: multi-resolution windows (tide 10-min, meteo hourly, river daily) plus the
-    padded UTide decoder sequence, all scaled with train-split statistics."""
-    df = load_gauge_df(data_path, verbose=verbose)
-    pressure, wind, rainfall, discharge = load_meteo(meteo_dir, verbose=verbose)
+    padded UTide decoder sequence, all scaled with train-split statistics.
+
+    `utide_fit_stride=None` uses the gauge's default from config.GAUGES."""
+    info = gauge_info(gauge)
+    stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
+    df = load_gauge_df(data_path or info['csv'], verbose=verbose)
+    pressure, wind, rainfall, discharge = load_meteo(meteo_dir, verbose=verbose, site=info['meteo_site'])
     grids = build_meteo_grids(df, pressure, wind, rainfall, discharge, verbose=verbose)
 
-    coef = fit_utide(df, end=TRAIN_END, verbose=verbose)
+    coef = fit_utide(df, end=TRAIN_END, lat=info['lat'], stride=stride, verbose=verbose)
     utide_index = pd.date_range(df['DateTime'].min(),
                                 df['DateTime'].max() + pd.Timedelta(days=UTIDE_EXT_DAYS), freq='10min')
     utide_full = reconstruct_utide(utide_index, coef)
@@ -485,6 +524,7 @@ def prepare_stage3(device, horizon_steps, decoder_seq_steps, target_slice, lookb
         {k: v for k, v in train_tensors.items() if k in tideonly_keys},
         {k: v for k, v in val_tensors.items() if k in tideonly_keys},
         {k: v for k, v in test_tensors.items() if k in ('X', 'Ydec')},
+        info['lat'], stride,
     )
     return data
 
@@ -496,7 +536,8 @@ def prepare_stage3_reduced(device, data, train_start, horizon_steps, decoder_seq
     refit on the reduced window, val/test windows rebuilt against that refit, and every
     scaler fit on only the data the scenario was allowed to see."""
     df = data.df
-    coef_r = fit_utide(df, start=train_start, end=TRAIN_END, verbose=False)
+    coef_r = fit_utide(df, start=train_start, end=TRAIN_END, lat=data.utide_lat,
+                       stride=data.utide_fit_stride, verbose=False)
     recon_r = reconstruct_utide(data.utide_index, coef_r)
 
     tr_df_r = df[(df['DateTime'] >= train_start) & (df['DateTime'] < TRAIN_END)].reset_index(drop=True)

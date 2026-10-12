@@ -16,6 +16,17 @@ Two tiers of figure:
 
     python models/plot_stage3.py
     # or run the `# %%` cells interactively in VS Code
+
+GAUGE picks whose tables/checkpoints to use; MAX_HORIZON_H drops the longer horizons from
+every figure (72 -> 10min..72h; None -> all 30) and picks the SHAP horizons to match. Both
+go into the figure and SHAP-table filenames (e.g. stage3_rmse_vs_horizon_full_richmond_72h.pdf),
+so the original full-horizon Southend outputs are never overwritten, and a SHAP table for a
+different horizon set is computed fresh rather than silently reused.
+
+SHAP needs the stage-3 windows, so it rebuilds them -- UTide fit included (~7 GB peak RAM,
+under a minute on CPU). SHAP_UTIDE_FIT_STRIDE = None reproduces the training-time fit exactly;
+6 fits on hourly samples (~2-4 GB) at the cost of a ~1 mm RMS difference in the decoder's
+UTide input.
 """
 # %% Bootstrap
 import pathlib
@@ -41,7 +52,8 @@ import torch
 from utils import paths
 from utils.models import config as C
 from utils.models import training
-from utils.plot_config import SERIES_COLOURS, save_fig, set_report_dir
+from utils.plot_config import (SERIES_COLOURS, figure_suffix, mark_better, save_fig,
+                               set_name_suffix, set_report_dir)
 
 # %% ------------------------------------------------------------------ CONFIG
 FIGURES = [
@@ -58,28 +70,38 @@ FIGURES = [
 ]
 FIGURES_TO_PLOT = FIGURES
 
+GAUGE = C.from_env('TIDAL_GAUGE', 'southend')  # 'southend' or 'richmond' (config.GAUGES); run_gauge.py sets it
+MAX_HORIZON_H = C.from_env('TIDAL_MAX_HORIZON_H', 72, float)  # plot horizons up to this many hours; None for all 30
+
 # SHAP settings (only used when a shap_* figure is selected)
 RECOMPUTE_SHAP = False    # True re-runs GradientExplainer instead of reusing the saved tables
-SHAP_HORIZONS = ['10min', '6h', '24h', '168h', '14d', '30d']
 SHAP_BACKGROUND_N = 150
 SHAP_EXPLAIN_N = 300
+SHAP_UTIDE_FIT_STRIDE = None   # None = the gauge's training-time stride; 6 for less RAM
 
 HORIZONS = C.STAGE3_HORIZONS
-HORIZON_NAMES = list(HORIZONS)
+HORIZON_NAMES = list(HORIZONS)       # all 30 -- the model's output order
 HORIZON_STEPS = list(HORIZONS.values())
-HEADLINE_NAMES = list(C.HEADLINE_HORIZONS)
+PLOT_HORIZONS = C.horizons_up_to(HORIZON_NAMES, HORIZONS, MAX_HORIZON_H)
+HEADLINE_NAMES = C.horizons_up_to(list(C.HEADLINE_HORIZONS), HORIZONS, MAX_HORIZON_H)
+# six horizons, to fill the 2x3 SHAP-vs-attention grid
+SHAP_HORIZONS = (['10min', '6h', '24h', '168h', '14d', '30d'] if MAX_HORIZON_H is None
+                 else C.horizons_up_to(list(C.HEADLINE_HORIZONS), HORIZONS, MAX_HORIZON_H))
 
-OUTPUT_DIR = paths.STAGE3_OUTPUT_DIR
-CHECKPOINT_DIR = paths.CHECKPOINTS_DIR
+OUTPUT_DIR = paths.stage_output_dir(3, GAUGE)
+CHECKPOINT_DIR = paths.checkpoint_dir(GAUGE)
 set_report_dir(str(paths.ensure_dir(paths.REPORT_IMAGES_DIR)))
+SUFFIX = figure_suffix(GAUGE, MAX_HORIZON_H)
+set_name_suffix(SUFFIX)
 NEEDS_MODEL = any(f.startswith('shap') for f in FIGURES_TO_PLOT)
+print(f"gauge: {GAUGE}  plotted horizons: {PLOT_HORIZONS}  SHAP horizons: {SHAP_HORIZONS}")
 
 
 def _read(name, **kwargs):
     path = OUTPUT_DIR / name
     if not path.exists():
         print(f"skipping figures that need {name} -- not found in {OUTPUT_DIR}. "
-              f"Run models/train_stage3.py first.")
+              f"Run models/train_stage3.py (GAUGE = '{GAUGE}') first.")
         return None
     return pd.read_csv(path, **kwargs)
 
@@ -102,6 +124,7 @@ if 'loss_curve' in FIGURES_TO_PLOT:
         plt.ylabel('MSE loss (scaled, log scale)')
         plt.legend(fontsize=8)
         plt.grid(alpha=0.3, which='both')
+        mark_better(plt.gca())
         plt.tight_layout()
         save_fig(fig, 'stage3_loss_curve')
         plt.show()
@@ -109,7 +132,14 @@ if 'loss_curve' in FIGURES_TO_PLOT:
 # %% RMSE vs horizon, full 30-horizon curve ---------------------------------
 metrics_df = _read('stage3_metrics.csv')
 observed_df = _read('stage3_observed_reference.csv')
-horizon_hours = np.array(HORIZON_STEPS) / 6.0   # 10-minute steps -> hours
+plot_hours = np.array([HORIZONS[h] for h in PLOT_HORIZONS]) / 6.0   # 10-minute steps -> hours
+
+
+def label_horizon_ticks(ax):
+    """With only a handful of horizons (a capped plot), name them on the log axis directly."""
+    if len(PLOT_HORIZONS) <= 8:
+        ax.set_xticks(plot_hours, PLOT_HORIZONS)
+        ax.minorticks_off()
 
 if metrics_df is not None:
     rmse_pivot = metrics_df.pivot(index='model', columns='horizon', values='rmse_m')[HORIZON_NAMES]
@@ -124,23 +154,26 @@ if metrics_df is not None:
                                index=['Observed (mean, m)'], columns=horizon_names)
         return pd.concat([obs_row, pivot_table])
 
-    print("\nRMSE (m), headline 7 horizons -- directly comparable to stage 2's own table:")
+    print("\nRMSE (m), headline horizons -- directly comparable to stage 2's own table:")
     print(with_observed_row(rmse_pivot[HEADLINE_NAMES], HEADLINE_NAMES).round(4))
-    print("\nMAE (m), headline 7 horizons:")
+    print("\nMAE (m), headline horizons:")
     print(with_observed_row(mae_pivot[HEADLINE_NAMES], HEADLINE_NAMES).round(4))
 
 if 'rmse_vs_horizon_full' in FIGURES_TO_PLOT and metrics_df is not None:
     fig = plt.figure(figsize=(10, 5))
     for name in rmse_pivot.index:
         style = '--' if 'UTide' in name else '-'
-        plt.plot(horizon_hours, rmse_pivot.loc[name], marker='o', markersize=3, linestyle=style,
+        plt.plot(plot_hours, rmse_pivot.loc[name, PLOT_HORIZONS], marker='o', markersize=3, linestyle=style,
                  label=name, color=SERIES_COLOURS.get(name))
-    plt.axvline(168, color='grey', linewidth=0.8, linestyle=':', label='stage-2 horizon limit (168h)')
+    if plot_hours.max() >= 168:
+        plt.axvline(168, color='grey', linewidth=0.8, linestyle=':', label='stage-2 horizon limit (168h)')
     plt.xscale('log')
     plt.xlabel('Forecast horizon (hours, log scale)')
     plt.ylabel('RMSE (m)')
     plt.legend()
     plt.grid(alpha=0.3, which='both')
+    mark_better(plt.gca())
+    label_horizon_ticks(plt.gca())
     plt.tight_layout()
     save_fig(fig, 'stage3_rmse_vs_horizon_full')
     plt.show()
@@ -159,24 +192,26 @@ if reduced_df is not None:
     train_years_order = reduced_df.drop_duplicates('model').set_index('model')['train_years'].sort_values()
     reduced_pivot = reduced_df.pivot(index='model', columns='horizon',
                                      values='rmse_m')[HORIZON_NAMES].loc[train_years_order.index]
-    print("\nRMSE (m) by training-data window, headline 7 horizons:")
+    print("\nRMSE (m) by training-data window, headline horizons:")
     print(reduced_pivot[HEADLINE_NAMES].round(4))
 
     if 'reduced_training' in FIGURES_TO_PLOT:
         fig = plt.figure(figsize=(10, 5))
         for name in reduced_pivot.index:
-            plt.plot(horizon_hours, reduced_pivot.loc[name], marker='o', markersize=3, label=name)
+            plt.plot(plot_hours, reduced_pivot.loc[name, PLOT_HORIZONS], marker='o', markersize=3, label=name)
         plt.xscale('log')
         plt.xlabel('Forecast horizon (hours, log scale)')
         plt.ylabel('RMSE (m)')
         plt.legend(title='training window', fontsize=8)
         plt.grid(alpha=0.3, which='both')
+        mark_better(plt.gca())
+        label_horizon_ticks(plt.gca())
         plt.tight_layout()
         save_fig(fig, 'stage3_reduced_training_rmse_vs_horizon')
         plt.show()
 
     if 'rmse_vs_training_years' in FIGURES_TO_PLOT:
-        fixed_horizons_check = [h for h in ['1h', '24h', '72h', '168h', '30d'] if h in HORIZON_NAMES]
+        fixed_horizons_check = [h for h in ['1h', '24h', '72h', '168h', '30d'] if h in PLOT_HORIZONS]
         fig = plt.figure(figsize=(8, 5))
         for hname in fixed_horizons_check:
             ys = [reduced_pivot.loc[name, hname] for name in train_years_order.index]
@@ -186,6 +221,7 @@ if reduced_df is not None:
         plt.legend(title='horizon', fontsize=8)
         plt.grid(alpha=0.3)
         plt.xticks(sorted(train_years_order.unique()))
+        mark_better(plt.gca())
         save_fig(fig, 'stage3_rmse_vs_training_years')
         plt.show()
 
@@ -199,7 +235,8 @@ if NEEDS_MODEL:
 
     DEVICE = torch.device('cpu')   # forward/backward passes only; no GPU required
     data = datasets.prepare_stage3(DEVICE, HORIZON_STEPS, C.DECODER_SEQ_STEPS,
-                                   C.TARGET_SLICE_IN_DECODER, lookback=C.LOOKBACK)
+                                   C.TARGET_SLICE_IN_DECODER, lookback=C.LOOKBACK,
+                                   gauge=GAUGE, utide_fit_stride=SHAP_UTIDE_FIT_STRIDE)
     stage3_model, _ = training.load_checkpoint_or_raise(
         TidalSeq2SeqMulti(C.DECODER_SEQ_LEN, C.TARGET_SLICE_IN_DECODER).to(DEVICE),
         CHECKPOINT_DIR / 'stage3_tidal_seq2seq_multi.pt', label='stage3-multi', device=DEVICE)
@@ -213,15 +250,15 @@ if NEEDS_MODEL:
     shap_explain_inputs = [data.test_tensors[k][explain_idx] for k in ('X', 'Xm', 'Xr', 'Ydec')]
 
 # %% SHAP: compute once, or reuse the saved tables --------------------------
-shap_summary_path = OUTPUT_DIR / 'stage3_shap_branch_contributions.csv'
-shap_lookback_path = OUTPUT_DIR / 'stage3_shap_tide_lookback_importance.csv'
+_table_sfx = f"_{SUFFIX}" if SUFFIX else ""
+shap_summary_path = OUTPUT_DIR / f'stage3_shap_branch_contributions{_table_sfx}.csv'
+shap_lookback_path = OUTPUT_DIR / f'stage3_shap_tide_lookback_importance{_table_sfx}.csv'
 
 if NEEDS_MODEL:
-    have_saved = shap_summary_path.exists() and shap_lookback_path.exists()
+    have_saved = (shap_summary_path.exists() and shap_lookback_path.exists()
+                  and set(SHAP_HORIZONS) <= set(pd.read_csv(shap_summary_path, index_col=0).index))
     if not RECOMPUTE_SHAP and have_saved:
-        shap_df = pd.read_csv(shap_summary_path, index_col=0)
-        SHAP_HORIZONS = [h for h in SHAP_HORIZONS if h in shap_df.index] or list(shap_df.index)
-        shap_df = shap_df.loc[SHAP_HORIZONS]
+        shap_df = pd.read_csv(shap_summary_path, index_col=0).loc[SHAP_HORIZONS]
         lookback_matrix = pd.read_csv(shap_lookback_path, index_col=0).loc[SHAP_HORIZONS].to_numpy()
         print(f"reusing saved SHAP tables ({shap_summary_path.name}, {shap_lookback_path.name}); "
               f"set RECOMPUTE_SHAP = True to re-run GradientExplainer.")

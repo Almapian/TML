@@ -11,7 +11,9 @@ needed for the prediction figure.
     python models/plot_stage1.py
     # or run the `# %%` cells interactively in VS Code
 
-Set FIGURES_TO_PLOT to a subset of FIGURES below to redraw only some of them.
+Set FIGURES_TO_PLOT to a subset of FIGURES below to redraw only some of them. GAUGE picks
+the gauge; for anything but Southend it is appended to the figure filenames. Stage 1's
+longest horizon is the 48h rollout, so there is no horizon cap here.
 """
 # %% Bootstrap
 import pathlib
@@ -38,7 +40,8 @@ from utils import paths
 from utils.models import config as C
 from utils.models import datasets, training
 from utils.models.architectures import MLP, LSTMModel, RNNModel
-from utils.plot_config import SERIES_COLOURS, save_fig, set_report_dir
+from utils.plot_config import (SERIES_COLOURS, figure_suffix, mark_better, save_fig,
+                               set_name_suffix, set_report_dir)
 
 # %% ------------------------------------------------------------------ CONFIG
 FIGURES = [
@@ -46,6 +49,7 @@ FIGURES = [
     'split_distributions',    # level and 10-min step distributions per split
     'yearly_volatility',      # std of the 10-min step change, year by year
     'predictions_vs_observed',  # test-set sample window, predictions and error
+    'rollout_rmse_vs_horizon',  # recursive-rollout RMSE out to 48h (needs initial_rollout_rmse.csv)
 ]
 FIGURES_TO_PLOT = FIGURES     # e.g. ['predictions_vs_observed'] to redraw just one
 
@@ -53,14 +57,28 @@ FIGURES_TO_PLOT = FIGURES     # e.g. ['predictions_vs_observed'] to redraw just 
 PLOT_WINDOW_START = '2022-01-01'
 PLOT_WINDOW_DAYS = 14
 
+GAUGE = C.from_env('TIDAL_GAUGE', 'southend')  # 'southend' or 'richmond' (config.GAUGES); run_gauge.py sets it
+
 LOOKBACK = C.LOOKBACK
-OUTPUT_DIR = paths.STAGE1_OUTPUT_DIR
-CHECKPOINT_DIR = paths.CHECKPOINTS_DIR
+OUTPUT_DIR = paths.stage_output_dir(1, GAUGE)
+CHECKPOINT_DIR = paths.checkpoint_dir(GAUGE)
 set_report_dir(str(paths.ensure_dir(paths.REPORT_IMAGES_DIR)))
+set_name_suffix(figure_suffix(GAUGE))
 DEVICE = torch.device('cpu')   # plotting is forward-pass only; no GPU required
 
+
+def _read(name, **kwargs):
+    """Read one of train_stage1.py's tables, or return None with a note if it is missing."""
+    path = OUTPUT_DIR / name
+    if not path.exists():
+        print(f"skipping output that needs {name} -- not found in {OUTPUT_DIR}. "
+              f"Run models/train_stage1.py (GAUGE = '{GAUGE}') first.")
+        return None
+    return pd.read_csv(path, **kwargs)
+
+
 # %% Data and trained models ------------------------------------------------
-data = datasets.prepare_stage1(DEVICE, lookback=LOOKBACK)
+data = datasets.prepare_stage1(DEVICE, lookback=LOOKBACK, gauge=GAUGE)
 
 model_factories = {
     'MLP': lambda: MLP(LOOKBACK),
@@ -81,14 +99,15 @@ for name, model in trained.items():
         model, predict_flat, data.test_tensors, data.y_test, data.flag_test,
         data.train_mean, data.train_std)
 
-metrics_df = pd.read_csv(OUTPUT_DIR / 'initial_metrics.csv')
-print("\nOne-step-ahead metrics (from initial_metrics.csv):")
-print(metrics_df.pivot(index='model', columns='split', values=['rmse_m', 'mae_m']).round(4))
+metrics_df = _read('initial_metrics.csv')
+if metrics_df is not None:
+    print("\nOne-step-ahead metrics (from initial_metrics.csv):")
+    print(metrics_df.pivot(index='model', columns='split', values=['rmse_m', 'mae_m']).round(4))
 
-rollout_path = OUTPUT_DIR / 'initial_rollout_rmse.csv'
-if rollout_path.exists():
+rollout_df = _read('initial_rollout_rmse.csv', index_col=0)
+if rollout_df is not None:
     print("\nRecursive-rollout RMSE (m):")
-    print(pd.read_csv(rollout_path, index_col=0).round(4))
+    print(rollout_df.round(4))
 
 # %% Figure: loss curves ----------------------------------------------------
 if 'loss_curves' in FIGURES_TO_PLOT:
@@ -117,6 +136,8 @@ if 'loss_curves' in FIGURES_TO_PLOT:
 
         axes[0, 0].set_ylabel('MSE loss\n(log scale)', fontsize=9)
         axes[1, 0].set_ylabel('MSE loss\n(log, epoch >= 2)', fontsize=9)
+        for row in range(2):
+            mark_better(axes[row, -1])
         save_fig(fig, 'initial_loss_curves', width_in=6.3, height_in=4.4, w_pad=2.0, h_pad=2.5)
         plt.show()
 
@@ -215,6 +236,22 @@ if 'predictions_vs_observed' in FIGURES_TO_PLOT:
     ax_err.grid(alpha=0.3)
 
     save_fig(fig, 'initial_predictions_vs_observed', width_in=6.3, height_in=4.2)
+    plt.show()
+
+# %% Figure: recursive-rollout RMSE vs horizon -------------------------------
+if 'rollout_rmse_vs_horizon' in FIGURES_TO_PLOT and rollout_df is not None:
+    rollout_horizons = list(rollout_df.columns)
+    fig = plt.figure(figsize=(8, 5))
+    for name in rollout_df.index:
+        style = '--' if name in ('Persistence', 'UTide') else '-'
+        plt.plot(rollout_horizons, rollout_df.loc[name], marker='o', linestyle=style,
+                 label=name, color=SERIES_COLOURS.get(name))
+    plt.xlabel('Forecast horizon (recursive rollout)')
+    plt.ylabel('RMSE (m)')
+    plt.legend()
+    plt.grid(alpha=0.3)
+    mark_better(plt.gca())
+    save_fig(fig, 'initial_rollout_rmse_vs_horizon')
     plt.show()
 
 print(f"\nFigures written to: {paths.REPORT_IMAGES_DIR}")

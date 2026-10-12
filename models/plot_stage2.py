@@ -10,6 +10,11 @@ stage2_history.json for the loss curves) and redraws into `report_images/`.
 
 Set FIGURES_TO_PLOT to a subset of FIGURES to redraw only some of them. A figure whose
 source CSV is missing is skipped with a message naming what to run.
+
+GAUGE picks whose tables to read; MAX_HORIZON_H drops the longer horizons (72 -> the six
+horizons up to 72h; None -> all seven). Both go into the figure filenames
+(e.g. stage2_rmse_vs_horizon_richmond_72h.pdf), so Southend's original full-horizon
+figures are never overwritten. Every RMSE/loss axis carries a "lower is better" arrow.
 """
 # %% Bootstrap
 import pathlib
@@ -34,7 +39,8 @@ import pandas as pd
 from utils import paths
 from utils.models import config as C
 from utils.models import training
-from utils.plot_config import SERIES_COLOURS, save_fig, set_report_dir
+from utils.plot_config import (SERIES_COLOURS, figure_suffix, mark_better, save_fig,
+                               set_name_suffix, set_report_dir)
 
 # %% ------------------------------------------------------------------ CONFIG
 FIGURES = [
@@ -48,9 +54,14 @@ FIGURES = [
 ]
 FIGURES_TO_PLOT = FIGURES
 
-HORIZON_NAMES = list(C.STAGE2_HORIZONS)
-OUTPUT_DIR = paths.STAGE2_OUTPUT_DIR
+GAUGE = C.from_env('TIDAL_GAUGE', 'southend')  # 'southend' or 'richmond' (config.GAUGES); run_gauge.py sets it
+MAX_HORIZON_H = C.from_env('TIDAL_MAX_HORIZON_H', 72, float)  # plot horizons up to this many hours; None for all seven
+
+HORIZON_NAMES = C.horizons_up_to(list(C.STAGE2_HORIZONS), C.STAGE2_HORIZONS, MAX_HORIZON_H)
+OUTPUT_DIR = paths.stage_output_dir(2, GAUGE)
 set_report_dir(str(paths.ensure_dir(paths.REPORT_IMAGES_DIR)))
+set_name_suffix(figure_suffix(GAUGE, MAX_HORIZON_H))
+print(f"gauge: {GAUGE}  horizons: {HORIZON_NAMES}")
 
 
 def _read(name):
@@ -58,7 +69,7 @@ def _read(name):
     path = OUTPUT_DIR / name
     if not path.exists():
         print(f"skipping figures that need {name} -- not found in {OUTPUT_DIR}. "
-              f"Run models/train_stage2.py first.")
+              f"Run models/train_stage2.py (GAUGE = '{GAUGE}') first.")
         return None
     return pd.read_csv(path)
 
@@ -82,6 +93,7 @@ if 'loss_curves_combined' in FIGURES_TO_PLOT and histories:
     plt.ylabel('MSE loss (scaled, log scale)')
     plt.legend(fontsize=8)
     plt.grid(alpha=0.3, which='both')
+    mark_better(plt.gca())
     plt.tight_layout()
     save_fig(fig, 'stage2_loss_curves_combined')
     plt.show()
@@ -100,6 +112,7 @@ if 'loss_curves' in FIGURES_TO_PLOT and histories:
         ax.legend()
         ax.grid(alpha=0.3, which='both')
     axes[0].set_ylabel('MSE loss (scaled, log scale)')
+    mark_better(axes[-1])
     plt.tight_layout()
     save_fig(fig, 'stage2_loss_curves', width_in=6.3, height_in=6.3 * (4 / (6 * n)))
     plt.show()
@@ -122,6 +135,7 @@ if 'rmse_vs_horizon' in FIGURES_TO_PLOT and metrics_df is not None:
     plt.ylabel('RMSE (m)')
     plt.legend()
     plt.grid(alpha=0.3)
+    mark_better(plt.gca())
     save_fig(fig, 'stage2_rmse_vs_horizon')
     plt.show()
 
@@ -144,6 +158,7 @@ if 'ablation_rmse_vs_horizon' in FIGURES_TO_PLOT and ablation_df is not None:
     plt.ylabel('RMSE (m)')
     plt.legend(fontsize=8)
     plt.grid(alpha=0.3)
+    mark_better(plt.gca())
     save_fig(fig, 'stage2_ablation_rmse_vs_horizon')
     plt.show()
 
@@ -169,6 +184,7 @@ if 'rmse_by_calendar_year' in FIGURES_TO_PLOT and year_df is not None:
     plt.legend(title='horizon', fontsize=8)
     plt.grid(alpha=0.3)
     plt.xticks(year_pivot.index)
+    mark_better(plt.gca())
     save_fig(fig, 'stage2_rmse_by_calendar_year')
     plt.show()
 
@@ -200,11 +216,12 @@ if reduced_df is not None:
         plt.ylabel('RMSE (m)')
         plt.legend(title='training window', fontsize=8)
         plt.grid(alpha=0.3)
+        mark_better(plt.gca())
         save_fig(fig, 'stage2_reduced_training_rmse_vs_horizon')
         plt.show()
 
     if 'rmse_vs_training_years' in FIGURES_TO_PLOT:
-        fixed_horizons = ['1h', '24h', '72h', '168h']
+        fixed_horizons = [h for h in ['1h', '24h', '72h', '168h'] if h in HORIZON_NAMES]
         fig = plt.figure(figsize=(8, 5))
         for hname in fixed_horizons:
             ys = [reduced_pivot.loc[name, hname] for name in train_years_order.index]
@@ -214,6 +231,7 @@ if reduced_df is not None:
         plt.legend(title='horizon', fontsize=8)
         plt.grid(alpha=0.3)
         plt.xticks(sorted(train_years_order.unique()))
+        mark_better(plt.gca())
         save_fig(fig, 'stage2_rmse_vs_training_years')
         plt.show()
 

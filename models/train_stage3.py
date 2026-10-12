@@ -17,6 +17,16 @@ Outputs (all under outputs/stage3_outputs/):
     stage3_observed_reference.csv                    observed mean/std per horizon
     stage3_history.json                              training curves, for plot_stage3.py
 Model weights go to models/checkpoints/ (tracked): stage3_*.pt
+
+Set GAUGE in the CONFIG block to run on another gauge (see config.GAUGES): its tables go to
+outputs/<gauge>/ and its weights to models/checkpoints/<gauge>/, so Southend's are never
+touched. Every training run writes a per-epoch resume file under outputs/_resume/, so an
+interrupted run (sleep, crash, reboot) continues from its last completed epoch when the
+script is simply re-run.
+
+REUSE_HPARAMS_FROM (default: Southend, for every other gauge) skips the random search and
+trains each model at the hyperparameters that won it on that gauge, read from its
+checkpoints -- so between gauges the data is the only thing that changes.
 """
 # %% Bootstrap
 import pathlib
@@ -37,6 +47,11 @@ from utils.models import datasets, training
 from utils.models.architectures import TidalSeq2SeqMulti, TidalSeq2SeqTideOnly
 
 # %% ------------------------------------------------------------------ CONFIG
+GAUGE = C.from_env('TIDAL_GAUGE', 'southend')  # 'southend' or 'richmond' (config.GAUGES); run_gauge.py sets it
+# Take lr / weight_decay / batch_size from this gauge's checkpoints instead of searching
+# (None = run the search, as Southend did).
+REUSE_HPARAMS_FROM = None if GAUGE == 'southend' else 'southend'
+
 LOOKBACK = C.LOOKBACK
 TRAIN_STRIDE = C.TRAIN_STRIDE
 EPOCHS = 60        # full-budget cap, used for the final runs and the s.12 ablation
@@ -61,10 +76,11 @@ N_HORIZONS = len(HORIZON_STEPS)
 HEADLINE_NAMES = list(C.HEADLINE_HORIZONS)   # the stage-2-comparable seven
 
 LOAD_FROM_CHECKPOINT = True   # False forces search + retrain even if checkpoints exist
-RUN_REDUCED_TRAINING = True   # s.12 training-data-volume ablation
+RUN_REDUCED_TRAINING = GAUGE == 'southend'   # s.12 training-data-volume ablation (Southend-only)
 
-OUTPUT_DIR = paths.ensure_dir(paths.STAGE3_OUTPUT_DIR)      # tables (gitignored scratch)
-CHECKPOINT_DIR = paths.ensure_dir(paths.CHECKPOINTS_DIR)     # model weights (tracked)
+OUTPUT_DIR = paths.ensure_dir(paths.stage_output_dir(3, GAUGE))   # tables (gitignored scratch)
+CHECKPOINT_DIR = paths.ensure_dir(paths.checkpoint_dir(GAUGE))     # model weights (tracked)
+print(f"gauge: {C.gauge_info(GAUGE)['label']}")
 DEVICE = C.describe_device()
 C.set_seed()
 torch.backends.cudnn.benchmark = True
@@ -75,7 +91,7 @@ print(f"decoder sequence length: {C.DECODER_SEQ_LEN} "
 
 # %% Data (gauge + meteo, multi-resolution windows) -------------------------
 data = datasets.prepare_stage3(DEVICE, HORIZON_STEPS, C.DECODER_SEQ_STEPS, C.TARGET_SLICE_IN_DECODER,
-                              lookback=LOOKBACK, train_stride=TRAIN_STRIDE)
+                              lookback=LOOKBACK, train_stride=TRAIN_STRIDE, gauge=GAUGE)
 
 predict_stage3 = lambda model, batch: model(batch['X'], batch['Xm'], batch['Xr'], batch['Ydec'])[0]
 predict_stage3_tideonly = lambda model, batch: model(batch['X'], batch['Ydec'])[0]
@@ -131,7 +147,14 @@ def random_search(model_ctor, predict_fn, train_tensors, val_tensors, label, rng
 def load_or_search(checkpoint_path, search_fn, label):
     """Reuse the winning hyperparameters already saved in a checkpoint's config, if one
     exists -- avoids re-running search trials just to recover values that are only needed
-    for a from-scratch retrain we are about to skip anyway."""
+    for a from-scratch retrain we are about to skip anyway. With REUSE_HPARAMS_FROM set, the
+    same-named checkpoint of that gauge supplies them instead of a search."""
+    if REUSE_HPARAMS_FROM is not None:
+        source = paths.checkpoint_dir(REUSE_HPARAMS_FROM) / checkpoint_path.name
+        cfg = torch.load(source, map_location='cpu', weights_only=False)['config']
+        best = {'lr': cfg['lr'], 'weight_decay': cfg['weight_decay'], 'batch_size': cfg['batch_size']}
+        print(f"[{label}] reusing {REUSE_HPARAMS_FROM}'s search-winning hyperparameters ({source}): {best}")
+        return best, None
     if LOAD_FROM_CHECKPOINT and checkpoint_path.exists():
         cfg = torch.load(checkpoint_path, map_location=DEVICE, weights_only=False)['config']
         best = {'lr': cfg['lr'], 'weight_decay': cfg['weight_decay'], 'batch_size': cfg['batch_size']}
@@ -175,7 +198,8 @@ stage3_model, histories['Stage-3 (meteo fusion)'] = training.load_or_train(
     lambda m: training.train_model(m, predict_stage3, data.train_tensors, data.val_tensors,
                                    epochs=EPOCHS, batch_size=BATCH_MULTI, lr=LR_MULTI,
                                    patience=PATIENCE, weight_decay=WD_MULTI,
-                                   horizon_weights=HORIZON_WEIGHTS, label='stage3-multi', device=DEVICE),
+                                   horizon_weights=HORIZON_WEIGHTS, label='stage3-multi', device=DEVICE,
+                                   resume_path=training.partial_path(ckpt_multi)),
     label='stage3-multi', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 
 C.set_seed()
@@ -185,7 +209,8 @@ stage3_tideonly_model, histories['Stage-3 (tide-only, no meteo)'] = training.loa
     lambda m: training.train_model(m, predict_stage3_tideonly, data.train_tensors_tideonly,
                                    data.val_tensors_tideonly, epochs=EPOCHS, batch_size=BATCH_TIDEONLY,
                                    lr=LR_TIDEONLY, patience=PATIENCE, weight_decay=WD_TIDEONLY,
-                                   horizon_weights=HORIZON_WEIGHTS, label='stage3-tideonly', device=DEVICE),
+                                   horizon_weights=HORIZON_WEIGHTS, label='stage3-tideonly', device=DEVICE,
+                                   resume_path=training.partial_path(ckpt_tideonly)),
     label='stage3-tideonly', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 
 training.save_history(histories, str(OUTPUT_DIR / 'stage3_history.json'))
@@ -241,7 +266,7 @@ for h, pct in zip(HEADLINE_NAMES, meteo_improvement_pct[:len(HEADLINE_NAMES)]):
     print(f"  {h:>6s}: full model vs. tide-only RMSE: {pct:+.1f}% (positive = adding meteo/river helped)")
 
 # %% Save checkpoints -------------------------------------------------------
-torch.save({
+training.save_checkpoint({
     'model_state_dict': stage3_model.state_dict(),
     'config': {
         'enc_hidden_size': 64, 'enc_num_layers': 1,
@@ -253,10 +278,9 @@ torch.save({
         'lr': LR_MULTI, 'weight_decay': WD_MULTI, 'batch_size': BATCH_MULTI,  # search winner
     },
     'scalers': data.scalers,
-}, ckpt_multi)
-print(f"saved {ckpt_multi}")
+}, ckpt_multi, LOAD_FROM_CHECKPOINT)
 
-torch.save({
+training.save_checkpoint({
     'model_state_dict': stage3_tideonly_model.state_dict(),
     'config': {
         'enc_hidden_size': 64, 'enc_num_layers': 1,
@@ -266,8 +290,7 @@ torch.save({
         'lr': LR_TIDEONLY, 'weight_decay': WD_TIDEONLY, 'batch_size': BATCH_TIDEONLY,
     },
     'scalers': {'tide_utide': data.scalers['tide_utide']},
-}, ckpt_tideonly)
-print(f"saved {ckpt_tideonly}")
+}, ckpt_tideonly, LOAD_FROM_CHECKPOINT)
 
 # %% Training-data-volume ablation ------------------------------------------
 # Mirrors stage 2 s.13.3: train end fixed, only the window start moves, UTide refit per
@@ -298,16 +321,15 @@ if RUN_REDUCED_TRAINING:
         m = make_tideonly().to(DEVICE)
         m, _ = training.load_or_train(
             m, ckpt_reduced,
-            lambda mm, scen=scen, name=name: training.train_model(
+            lambda mm, scen=scen, name=name, ck=ckpt_reduced: training.train_model(
                 mm, predict_stage3_tideonly, scen['train_tensors'], scen['val_tensors'],
                 epochs=EPOCHS, batch_size=BATCH_TIDEONLY, lr=LR_TIDEONLY, patience=PATIENCE,
                 weight_decay=WD_TIDEONLY, horizon_weights=HORIZON_WEIGHTS,
-                label=f'stage3-tideonly-{name}', device=DEVICE),
+                label=f'stage3-tideonly-{name}', device=DEVICE, resume_path=training.partial_path(ck)),
             label=f'stage3-tideonly-{name}', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
-        torch.save({'model_state_dict': m.state_dict(),
+        training.save_checkpoint({'model_state_dict': m.state_dict(),
                     'scaler': {'mean': scen['mean'], 'std': scen['std']},
-                    'config': {'train_years': n_years, 'train_start': start}}, ckpt_reduced)
-        print(f"saved {ckpt_reduced}")
+                    'config': {'train_years': n_years, 'train_start': start}}, ckpt_reduced, LOAD_FROM_CHECKPOINT)
 
         rmse_r, mae_r, _ = training.compute_metrics(
             m, predict_stage3_tideonly, scen['test_tensors'], scen['Y_test'], scen['Flag_test'],

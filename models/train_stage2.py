@@ -16,6 +16,12 @@ Outputs (all under outputs/stage2_outputs/):
     stage2_reduced_training_utide_only_metrics.csv UTide alone per training window
     stage2_history.json                            training curves, for plot_stage2.py
 Model weights go to models/checkpoints/ (tracked): stage1_flat_*.pt, stage2_*.pt
+
+Set GAUGE in the CONFIG block to run on another gauge (see config.GAUGES): its tables go to
+outputs/<gauge>/ and its weights to models/checkpoints/<gauge>/, so Southend's are never
+touched. Every training run writes a per-epoch resume file under outputs/_resume/, so an
+interrupted run (sleep, crash, reboot) continues from its last completed epoch when the
+script is simply re-run.
 """
 # %% Bootstrap
 import pathlib
@@ -36,6 +42,8 @@ from utils.models import datasets, training
 from utils.models.architectures import FlatMultiHorizonLSTM, FlatMultiHorizonMLP, TidalSeq2Seq
 
 # %% ------------------------------------------------------------------ CONFIG
+GAUGE = C.from_env('TIDAL_GAUGE', 'southend')  # 'southend' or 'richmond' (config.GAUGES); run_gauge.py sets it
+
 LOOKBACK = C.LOOKBACK
 TRAIN_STRIDE = C.TRAIN_STRIDE
 BATCH_SIZE = 512      # halved vs stage 1: attention + multi-horizon decoding costs more memory
@@ -53,18 +61,21 @@ HORIZON_STEPS = list(HORIZONS.values())
 N_HORIZONS = len(HORIZON_STEPS)
 
 LOAD_FROM_CHECKPOINT = True   # False forces a full retrain even if checkpoints exist
-RUN_TIDE_ABLATION = True      # 13.1 -- retrain with the decoder fed zeros instead of UTide
-RUN_YEAR_WEEK_SLICES = True   # 13.2 -- RMSE by calendar year and by specific test weeks
-RUN_REDUCED_TRAINING = True   # 13.3 -- retrain on the last 3 / 7 / 10 years
+# The robustness retrains are Southend-only by design: other gauges run the headline models.
+RUN_TIDE_ABLATION = GAUGE == 'southend'     # 13.1 -- retrain with the decoder fed zeros instead of UTide
+RUN_YEAR_WEEK_SLICES = True                 # 13.2 -- RMSE by calendar year and by specific test weeks
+RUN_REDUCED_TRAINING = GAUGE == 'southend'  # 13.3 -- retrain on the last 3 / 7 / 10 years
 
-OUTPUT_DIR = paths.ensure_dir(paths.STAGE2_OUTPUT_DIR)      # tables (gitignored scratch)
-CHECKPOINT_DIR = paths.ensure_dir(paths.CHECKPOINTS_DIR)     # model weights (tracked)
+OUTPUT_DIR = paths.ensure_dir(paths.stage_output_dir(2, GAUGE))   # tables (gitignored scratch)
+CHECKPOINT_DIR = paths.ensure_dir(paths.checkpoint_dir(GAUGE))     # model weights (tracked)
+print(f"gauge: {C.gauge_info(GAUGE)['label']}")
 DEVICE = C.describe_device()
 C.set_seed()
 torch.backends.cudnn.benchmark = True
 
 # %% Data (UTide fit on train only, reconstructed across the full span) ------
-data = datasets.prepare_stage2(DEVICE, HORIZON_STEPS, lookback=LOOKBACK, train_stride=TRAIN_STRIDE)
+data = datasets.prepare_stage2(DEVICE, HORIZON_STEPS, lookback=LOOKBACK, train_stride=TRAIN_STRIDE,
+                               gauge=GAUGE)
 
 predict_flat = lambda model, batch: model(batch['X'])
 predict_seq2seq = lambda model, batch: model(batch['X'], batch['Ydec'])[0]
@@ -126,7 +137,8 @@ stage1_lstm_model, histories['Stage 1 (flat LSTM)'] = training.load_or_train(
     stage1_lstm_model, ckpt_s1_lstm,
     lambda m: training.train_model(m, predict_flat, data.train_tensors_flat, data.val_tensors_flat,
                                    epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR, patience=PATIENCE,
-                                   label='stage1-lstm', device=DEVICE),
+                                   label='stage1-lstm', device=DEVICE,
+                                   resume_path=training.partial_path(ckpt_s1_lstm)),
     label='stage1-lstm', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 
 ckpt_s1_mlp = CHECKPOINT_DIR / 'stage1_flat_mlp_multihorizon.pt'
@@ -136,7 +148,8 @@ stage1_mlp_model, histories['Stage 1 (flat MLP)'] = training.load_or_train(
     stage1_mlp_model, ckpt_s1_mlp,
     lambda m: training.train_model(m, predict_flat, data.train_tensors_flat, data.val_tensors_flat,
                                    epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR, patience=PATIENCE,
-                                   label='stage1-mlp', device=DEVICE),
+                                   label='stage1-mlp', device=DEVICE,
+                                   resume_path=training.partial_path(ckpt_s1_mlp)),
     label='stage1-mlp', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 
 # %% Train: stage-2 encoder + attention + UTide-informed BiLSTM decoder ------
@@ -147,7 +160,8 @@ stage2_model, histories['Stage 2 (attn decoder)'] = training.load_or_train(
     stage2_model, ckpt_s2,
     lambda m: training.train_model(m, predict_seq2seq, data.train_tensors, data.val_tensors,
                                    epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR, patience=PATIENCE,
-                                   label='stage2-attn', device=DEVICE),
+                                   label='stage2-attn', device=DEVICE,
+                                   resume_path=training.partial_path(ckpt_s2)),
     label='stage2-attn', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 
 training.save_history(histories, str(OUTPUT_DIR / 'stage2_history.json'))
@@ -176,25 +190,24 @@ print(f"saved {metrics_path}")
 print(metrics_df.pivot(index='model', columns='horizon', values='rmse_m')[HORIZON_NAMES].round(4))
 
 # %% Save checkpoints -------------------------------------------------------
-torch.save({
+training.save_checkpoint({
     'model_state_dict': stage2_model.state_dict(),
     'config': {'enc_hidden_size': ENC_HIDDEN_SIZE, 'enc_num_layers': ENC_NUM_LAYERS,
                'dec_hidden_size': DEC_HIDDEN_SIZE, 'dec_num_layers': DEC_NUM_LAYERS,
                'attn_dim': ATTN_DIM, 'lookback': LOOKBACK, 'horizons': HORIZONS},
     'scaler': {'mean': data.train_mean, 'std': data.train_std},
-}, ckpt_s2)
-torch.save({
+}, ckpt_s2, LOAD_FROM_CHECKPOINT)
+training.save_checkpoint({
     'model_state_dict': stage1_lstm_model.state_dict(),
     'config': {'hidden_size': ENC_HIDDEN_SIZE, 'num_layers': ENC_NUM_LAYERS,
                'lookback': LOOKBACK, 'horizons': HORIZONS},
     'scaler': {'mean': data.train_mean, 'std': data.train_std},
-}, ckpt_s1_lstm)
-torch.save({
+}, ckpt_s1_lstm, LOAD_FROM_CHECKPOINT)
+training.save_checkpoint({
     'model_state_dict': stage1_mlp_model.state_dict(),
     'config': {'hidden': (128, 64), 'lookback': LOOKBACK, 'horizons': HORIZONS},
     'scaler': {'mean': data.train_mean, 'std': data.train_std},
-}, ckpt_s1_mlp)
-print(f"saved {ckpt_s2}\nsaved {ckpt_s1_lstm}\nsaved {ckpt_s1_mlp}")
+}, ckpt_s1_mlp, LOAD_FROM_CHECKPOINT)
 
 # %% 13.1 Tide-input ablation ----------------------------------------------
 # Retrains the same architecture with the decoder always fed zeros instead of the UTide
@@ -210,11 +223,11 @@ if RUN_TIDE_ABLATION:
         stage2_notide_model, ckpt_notide,
         lambda m: training.train_model(m, predict_seq2seq_notide, data.train_tensors, data.val_tensors,
                                        epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR, patience=PATIENCE,
-                                       label='stage2-no-tide-ablation', device=DEVICE),
+                                       label='stage2-no-tide-ablation', device=DEVICE,
+                                       resume_path=training.partial_path(ckpt_notide)),
         label='stage2-no-tide-ablation', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
-    torch.save({'model_state_dict': stage2_notide_model.state_dict(),
-                'scaler': {'mean': data.train_mean, 'std': data.train_std}}, ckpt_notide)
-    print(f"saved {ckpt_notide}")
+    training.save_checkpoint({'model_state_dict': stage2_notide_model.state_dict(),
+                'scaler': {'mean': data.train_mean, 'std': data.train_std}}, ckpt_notide, LOAD_FROM_CHECKPOINT)
 
     rmse_notide, mae_notide, _ = training.compute_metrics(
         stage2_notide_model, predict_seq2seq_notide, data.test_tensors, data.Y_test, data.Flag_test, *scaler)
@@ -306,7 +319,8 @@ if RUN_REDUCED_TRAINING:
     for name, start in C.REDUCED_TRAIN_STARTS.items():
         n_years = int(name.replace('yr', ''))
         scen = datasets.prepare_stage2_reduced(DEVICE, data.df, start, HORIZON_STEPS,
-                                               lookback=LOOKBACK, train_stride=TRAIN_STRIDE, name=name)
+                                               lookback=LOOKBACK, train_stride=TRAIN_STRIDE, name=name,
+                                               gauge=GAUGE)
 
         rmse_u, mae_u = training.masked_rmse_mae(scen['Ydec_test'], scen['Y_test'], scen['Flag_test'])
         reduced_utide_only += [{'model': name, 'horizon': h, 'rmse_m': rmse_u[j],
@@ -318,15 +332,14 @@ if RUN_REDUCED_TRAINING:
         m = TidalSeq2Seq(ENC_HIDDEN_SIZE, ENC_NUM_LAYERS, DEC_HIDDEN_SIZE, DEC_NUM_LAYERS, ATTN_DIM).to(DEVICE)
         m, _ = training.load_or_train(
             m, ckpt_reduced,
-            lambda mm, scen=scen, name=name: training.train_model(
+            lambda mm, scen=scen, name=name, ck=ckpt_reduced: training.train_model(
                 mm, predict_seq2seq, scen['train_tensors'], scen['val_tensors'],
                 epochs=EPOCHS, batch_size=BATCH_SIZE, lr=LR, patience=PATIENCE,
-                label=f'stage2-{name}', device=DEVICE),
+                label=f'stage2-{name}', device=DEVICE, resume_path=training.partial_path(ck)),
             label=f'stage2-{name}', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
-        torch.save({'model_state_dict': m.state_dict(),
+        training.save_checkpoint({'model_state_dict': m.state_dict(),
                     'scaler': {'mean': scen['mean'], 'std': scen['std']},
-                    'config': {'train_years': n_years, 'train_start': start}}, ckpt_reduced)
-        print(f"saved {ckpt_reduced}")
+                    'config': {'train_years': n_years, 'train_start': start}}, ckpt_reduced, LOAD_FROM_CHECKPOINT)
 
         rmse_r, mae_r, _ = training.compute_metrics(
             m, predict_seq2seq, scen['test_tensors'], scen['Y_test'], scen['Flag_test'],

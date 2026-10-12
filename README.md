@@ -73,6 +73,12 @@ Only the gauge record is published here.
   datum-corrected to ODN and patched for chatter and stuck-sensor faults, with the
   `is_chatter_flagged` / `is_stuck_flagged` / `is_imputed` columns marking every value that
   was corrected. Stages 1 and 2 need nothing else.
+- **`Data/richmond_lock_data.csv`** — the second gauge, Richmond Lock (tidal limit, ~8 km
+  below Kingston), in the same schema. Written by `python src/clean_richmond.py` from
+  `3_Cleaned/01_RICHMOND.csv`: spikes/chatter, stuck-sensor runs, a 5-day datum shift
+  (Aug 2009) and out-of-range readings are flagged and patched, gaps of 6 h or less are
+  filled, and anything longer is left as a real gap. Every patched value is flagged. Not
+  in the repo (size) — `models/run_gauge.py` regenerates it when it is missing.
 - **`Data/meteo/`** (not in the repo, for size) — the four meteorological series stage 3
   uses: ERA5 pressure and 10 m wind at Southend, plus NRFA rainfall and river discharge for
   the Thames at Kingston. Regenerate with `python src/download_meteo_data.py` (needs a free
@@ -125,8 +131,42 @@ python models/train_stage3.py
 Each training script skips any model whose checkpoint already exists — set
 `LOAD_FROM_CHECKPOINT = False` in the CONFIG block to force a full retrain. Stage 2 and
 stage 3 also have flags for the expensive robustness checks (`RUN_TIDE_ABLATION`,
-`RUN_REDUCED_TRAINING`, …); turn them off for a quicker run. Training on CPU is very slow —
-use a GPU runtime.
+`RUN_REDUCED_TRAINING`, …); turn them off for a quicker run. CPU training works but takes
+hours per stage — see the next section.
+
+### Another gauge, a shorter horizon, or a laptop
+
+Every train and plot script has `GAUGE = 'southend'` in its CONFIG block; set it to
+`'richmond'` (see `GAUGES` in `utils/models/config.py`). A non-Southend gauge writes its
+tables to `outputs/<gauge>/` and its weights to `models/checkpoints/<gauge>/`, so it
+never overwrites Southend's. It trains the headline models only: the robustness retrains
+are Southend-only, and stage 3 reuses Southend's search-winning hyperparameters rather
+than searching again. Stage 3 also reuses Southend's ERA5 pressure/wind, the only
+meteorological point downloaded.
+
+`MAX_HORIZON_H = 72` in `plot_stage2.py` / `plot_stage3.py` draws only horizons up to 72h.
+The models are direct multi-horizon predictors, so this is an evaluation to 72h with the
+same trained models. The figure filenames get the gauge and cap appended
+(`stage2_rmse_vs_horizon_richmond_72h.pdf`); set it to `None` for the full horizon set and
+the original filenames. Every RMSE/MAE/loss axis carries a small "better" arrow.
+
+Training runs fine on a CPU-only laptop (measured on an 8-core Intel Core Ultra, 32 GB):
+data preparation peaks at ~7–9 GB of RAM, and the headline Richmond models take roughly
+6–7 hours in total. Every training run writes a per-epoch resume file to
+`outputs/_resume/`, so an interrupted run continues from its last finished epoch.
+
+**`models/run_gauge.py` runs a whole gauge unattended** — set `GAUGE` / `MAX_HORIZON_H`
+in its CONFIG block, then from a terminal (laptop plugged in, lid open):
+
+```powershell
+& C:\Users\alfat\anaconda3\envs\geospatial\python.exe models/run_gauge.py
+```
+
+It cleans the data if needed, then runs train/plot for stage 2, then stage 3, then stage 1.
+It passes the gauge to each script through `TIDAL_GAUGE` / `TIDAL_MAX_HORIZON_H`, so the
+scripts' own CONFIG defaults stay at Southend. A failed step is retried (up to 3 times),
+resuming rather than restarting. Logs go to `logs/<gauge>/`. Re-launching skips the steps
+already done. See `CHANGELOG.md` for the full set-up record.
 
 ### Rebuilding the data
 

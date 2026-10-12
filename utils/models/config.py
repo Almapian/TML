@@ -4,11 +4,14 @@ These are the values the stage 1-3 notebooks each declared for themselves; keepi
 one copy here is what stops the three stages from silently drifting apart on, say,
 the train/validation boundary or the site latitude used for the UTide fit.
 """
+import os
 import random
 
 import numpy as np
 import pandas as pd
 import torch
+
+from .. import paths
 
 SEED = 42
 
@@ -16,7 +19,7 @@ SEED = 42
 STEP = pd.Timedelta('10min')       # native gauge resolution
 LOOKBACK = 96                       # 16h of 10-minute steps (> one semi-diurnal cycle)
 TRAIN_STRIDE = 3                    # subsample *training* windows only, to cut epoch time
-SITE_LAT = 51.5145                  # Southend Pier
+SITE_LAT = 51.5145                  # Southend Pier (the default gauge; see GAUGES)
 M2_STEPS = 74.5                     # ~M2 semi-diurnal period, in 10-minute steps
 
 # --- chronological split (train 2004-2017, validation 2018-2020, test 2021-2024) ---
@@ -25,6 +28,44 @@ VAL_END = '2021-01-01'
 
 # --- columns read from the gauge CSV ---
 GAUGE_USECOLS = ['DateTime', 'Observed_ODN', 'is_chatter_flagged', 'is_stuck_flagged', 'is_imputed']
+
+# --- gauges the pipeline can run on; every train/plot script picks one via GAUGE ---
+# utide_fit_stride: fit the harmonic constituents on every n-th row. UTide's least-squares
+# design matrix costs ~130 bytes per row per constituent (68 constituents here), so the
+# full-resolution train-split fit dominates data preparation: measured peaks on CPU were
+# 6.7 GB (stages 2/3) and 8.7 GB (stage 1's train+val fit) at stride 1, 2.1 GB at stride 6.
+# Both gauges use stride 1, the method the Southend checkpoints were trained with. Stride 6
+# (hourly) is there for a smaller machine: on 3 years of Southend it selected the same 68
+# constituents, its reconstruction differed by ~1 mm RMS, and test RMSE was unchanged
+# (0.2433 vs 0.2434 m).
+# meteo_site: which ERA5 point in Data/meteo/ feeds stage 3's pressure/wind branch. Only
+# Southend Pier was downloaded; Richmond reuses it as the estuary-mouth forcing (pressure is
+# synoptic-scale, and Thames surge is driven mostly from the North Sea).
+GAUGES = {
+    'southend': {'label': 'Southend Pier', 'csv': paths.SOUTHEND_CSV, 'lat': 51.5145,
+                 'utide_fit_stride': 1, 'meteo_site': 'Southend Pier'},
+    'richmond': {'label': 'Richmond Lock', 'csv': paths.RICHMOND_CSV, 'lat': 51.463,
+                 'utide_fit_stride': 1, 'meteo_site': 'Southend Pier'},
+}
+
+
+def from_env(name, default, cast=str):
+    """A script's CONFIG value, overridable by an environment variable.
+
+    models/run_gauge.py sets TIDAL_GAUGE / TIDAL_MAX_HORIZON_H for every script it runs,
+    so one run can be pointed at a gauge without editing six CONFIG blocks. Run directly,
+    a script just uses `default`. The string 'none' means None.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return None if raw.strip().lower() == 'none' else cast(raw)
+
+
+def gauge_info(gauge):
+    if gauge not in GAUGES:
+        raise ValueError(f"unknown gauge {gauge!r}; choose one of {list(GAUGES)}")
+    return GAUGES[gauge]
 
 
 def get_device():
@@ -69,6 +110,18 @@ STAGE2_HORIZONS = dict(HEADLINE_HORIZONS)
 EXTENDED_DAY_NUMS = list(range(8, 31))  # 8..30 inclusive -> 23 entries
 EXTENDED_HORIZONS = {f'{d}d': d * STEPS_PER_DAY for d in EXTENDED_DAY_NUMS}
 STAGE3_HORIZONS = {**HEADLINE_HORIZONS, **EXTENDED_HORIZONS}
+
+
+def horizons_up_to(horizon_names, horizons, max_hours=None):
+    """The subset of `horizon_names` at most `max_hours` ahead (all of them if None).
+
+    The stage 2/3 models are direct multi-horizon predictors -- each horizon is its own
+    output -- so dropping the longer ones here is exactly an evaluation to `max_hours`.
+    """
+    if max_hours is None:
+        return list(horizon_names)
+    return [h for h in horizon_names if horizons[h] / 6.0 <= max_hours]
+
 
 # Stage 3's decoder input sequence: a leading "now" point, the 30 real (trained) horizons,
 # and a small trailing margin past 30d, purely so neither 10min nor 30d sits at the literal

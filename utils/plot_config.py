@@ -74,12 +74,56 @@ SERIES_COLOURS = {
 }
 
 _report_dir = "report_images"
+_name_suffix = ""
+
+# muted ink for annotations -- never a series colour, so it can't be mistaken for data
+ANNOTATION_INK = "0.35"
 
 
 def set_report_dir(path):
     """Call once per notebook, right after IN_COLAB/OUTPUT_DIR are known."""
     global _report_dir
     _report_dir = path
+
+
+def set_name_suffix(suffix):
+    """Append `_<suffix>` to every filename `save_fig` writes from now on (e.g. 'richmond_72h'),
+    so a variant of a figure never overwrites the original. '' or None turns it off."""
+    global _name_suffix
+    _name_suffix = f"_{suffix}" if suffix else ""
+
+
+def figure_suffix(gauge="southend", max_horizon_h=None):
+    """The suffix a plot script should use: the gauge (omitted for Southend, so the
+    original filenames are unchanged) and the horizon cap, e.g. 'richmond_72h'."""
+    parts = [] if gauge == "southend" else [gauge]
+    if max_horizon_h is not None:
+        parts.append(f"{max_horizon_h:g}h")
+    return "_".join(parts)
+
+
+def mark_better(ax, direction="lower", text="better"):
+    """Small arrow just outside the right spine pointing the way the y-metric improves
+    (down for RMSE/MAE/loss), with `text` at its head.
+
+    Drawn as a matplotlib arrow rather than a Unicode glyph, since the serif report font
+    may not carry arrow characters. It sits outside the plot area so it can never cover
+    data; tight_layout / bbox_inches='tight' make room for it. In multi-panel figures,
+    mark only the rightmost panel of a row -- the arrow would otherwise sit between panels.
+    """
+    x = 1.025
+    if direction == "lower":
+        tail, head, rotation = 0.64, 0.36, -90   # label reads downwards, along the arrow
+    elif direction == "higher":
+        tail, head, rotation = 0.36, 0.64, 90
+    else:
+        raise ValueError("direction must be 'lower' or 'higher'")
+    ax.annotate("", xy=(x, head), xytext=(x, tail), xycoords="axes fraction",
+                annotation_clip=False,
+                arrowprops=dict(arrowstyle="-|>", color=ANNOTATION_INK, lw=1.0, mutation_scale=9,
+                                shrinkA=0, shrinkB=0))
+    ax.text(x + 0.012, 0.5, text, transform=ax.transAxes, rotation=rotation, ha="left", va="center",
+            rotation_mode="default", fontsize=8, color=ANNOTATION_INK, clip_on=False)
 
 
 def _warn_if_labels_overflow(fig, name, width_in, height_in):
@@ -118,7 +162,7 @@ def save_fig(fig, name, width_in=6.3, height_in=None, **tight_layout_kwargs):
     fig.tight_layout(**tight_layout_kwargs)
     _warn_if_labels_overflow(fig, name, width_in, height_in)
     os.makedirs(_report_dir, exist_ok=True)
-    path = os.path.join(_report_dir, f"{name}.pdf")
+    path = os.path.join(_report_dir, f"{name}{_name_suffix}.pdf")
     fig.savefig(path, bbox_inches="tight")
     print(f"saved {path}")
     return path

@@ -15,6 +15,7 @@ Two entry points matter for the scripts:
 """
 import json
 import os
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -58,9 +59,41 @@ def batch_iter(tensors, batch_size, shuffle):
 # ======================================================================================
 # Training
 # ======================================================================================
+def partial_path(checkpoint_path):
+    """Where `train_model` keeps its per-epoch resume state for a given final checkpoint.
+
+    Kept under outputs/ (gitignored scratch) rather than next to the tracked checkpoint,
+    mirroring the checkpoint's position relative to models/checkpoints/ so two gauges'
+    identically named models never share a resume file.
+    """
+    from .. import paths
+    checkpoint_path = Path(checkpoint_path).resolve()
+    try:
+        rel = checkpoint_path.relative_to(paths.CHECKPOINTS_DIR.resolve())
+    except ValueError:
+        rel = Path(checkpoint_path.name)
+    return paths.OUTPUTS_DIR / '_resume' / rel.with_suffix('.partial.pt')
+
+
+def _save_atomic(obj, path):
+    """torch.save via a temp file, so a crash mid-write can't leave a corrupt resume file."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix('.tmp')
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+
 def train_model(model, predict_fn, train_tensors, val_tensors, epochs, batch_size, lr,
-                patience, label, weight_decay=0.0, horizon_weights=None, device=None):
+                patience, label, weight_decay=0.0, horizon_weights=None, device=None,
+                resume_path=None):
     """Masked-MSE training with early stopping on validation loss and ReduceLROnPlateau.
+
+    With `resume_path` set, the full training state (weights, optimiser, scheduler, best
+    weights so far, history, early-stopping counter, RNG) is written there after every
+    epoch, and an interrupted run picks up from the last completed epoch. That is what
+    makes multi-hour CPU runs safe on a laptop: a sleep, crash or reboot costs one epoch.
+    A run that finished is marked as such, so re-running returns its result immediately.
 
     Returns (model with best-validation weights restored, history dict).
     """
@@ -73,8 +106,37 @@ def train_model(model, predict_fn, train_tensors, val_tensors, epochs, batch_siz
     best_state = None
     epochs_no_improve = 0
     history = {'train_loss': [], 'val_loss': []}
+    start_epoch = 0
+    finished = False
 
-    for epoch in range(epochs):
+    if resume_path is not None and os.path.exists(resume_path):
+        state = torch.load(resume_path, map_location=device, weights_only=False)
+        model.load_state_dict(state['model'])
+        opt.load_state_dict(state['opt'])
+        sched.load_state_dict(state['sched'])
+        best_val, best_state = state['best_val'], state['best_state']
+        epochs_no_improve, history = state['epochs_no_improve'], state['history']
+        start_epoch, finished = state['epoch'] + 1, state['finished']
+        torch.set_rng_state(state['rng_cpu'])
+        if torch.cuda.is_available() and state.get('rng_cuda') is not None:
+            torch.cuda.set_rng_state_all(state['rng_cuda'])
+        print(f"[{label}] resuming from {resume_path} after epoch {start_epoch} "
+              f"(best val_loss so far {best_val:.5f}){' -- run already finished' if finished else ''}")
+
+    def _checkpoint(epoch, done):
+        if resume_path is None:
+            return
+        _save_atomic({
+            'model': model.state_dict(), 'opt': opt.state_dict(), 'sched': sched.state_dict(),
+            'best_val': best_val, 'best_state': best_state, 'epochs_no_improve': epochs_no_improve,
+            'history': history, 'epoch': epoch, 'finished': done,
+            'rng_cpu': torch.get_rng_state(),
+            'rng_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        }, resume_path)
+
+    for epoch in range(start_epoch, epochs):
+        if finished:
+            break
         model.train()
         running_loss, n_seen = 0.0, 0
         for batch in batch_iter(train_tensors, batch_size, shuffle=True):
@@ -116,7 +178,9 @@ def train_model(model, predict_fn, train_tensors, val_tensors, epochs, batch_siz
         print(f"[{label}] epoch {epoch + 1:03d}  train_loss={train_loss:.5f}  val_loss={val_loss:.5f}"
               f"  lr={opt.param_groups[0]['lr']:.1e}{'  *' if improved else ''}")
 
-        if epochs_no_improve >= patience:
+        stop = epochs_no_improve >= patience
+        _checkpoint(epoch, done=stop)   # an exhausted epoch budget needs no flag: range() is empty
+        if stop:
             print(f"[{label}] early stopping at epoch {epoch + 1} (best val_loss={best_val:.5f})")
             break
 
@@ -154,7 +218,26 @@ def load_or_train(model, checkpoint_path, train_fn, label, load_from_checkpoint=
         model.eval()
         print(f"[{label}] loaded weights from {checkpoint_path}")
         return model, None
+
+    # A forced retrain must not short-circuit on a *finished* resume file left by the
+    # previous run; an unfinished one is a retrain that was interrupted, so it is kept.
+    resume = partial_path(checkpoint_path)
+    if not load_from_checkpoint and resume.exists():
+        if torch.load(resume, map_location='cpu', weights_only=False)['finished']:
+            os.remove(resume)
     return train_fn(model)
+
+
+def save_checkpoint(payload, checkpoint_path, load_from_checkpoint=True):
+    """torch.save, unless this run merely loaded `checkpoint_path` -- re-saving a loaded
+    checkpoint would rewrite a tracked file with identical weights (and, for older
+    checkpoints, a different set of keys). A path that didn't exist before this run, or a
+    forced retrain, always saves."""
+    if load_from_checkpoint and os.path.exists(checkpoint_path):
+        print(f"{checkpoint_path} was loaded, not retrained -- left as-is")
+        return
+    torch.save(payload, checkpoint_path)
+    print(f"saved {checkpoint_path}")
 
 
 def load_checkpoint_or_raise(model, checkpoint_path, label, device=None):
