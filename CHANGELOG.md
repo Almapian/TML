@@ -142,6 +142,12 @@ The crash seen earlier when running on the laptop could not be reproduced. With 
   - a 1-epoch smoke run on 2% of the data went end to end.
 - UTide alone scores 0.56 m RMSE at Richmond on the test set.
 
+**Richmond: rehearsal before the overnight run.**
+- Each of the six steps was run once against scratch folders: 1 epoch, every 30th training window, a 20-sample SHAP.
+- All six exited 0 and drew all 17 Richmond figures. Stage 3 picked up Southend's hyperparameters.
+- The only skips were the Southend-only ablation figures, which is expected.
+- The real `models/checkpoints/richmond/`, `outputs/_resume/` and `logs/richmond/` were confirmed empty afterwards, so the real run starts from scratch.
+
 ### To run Richmond
 
 1. Plug the laptop in and leave the lid open.
