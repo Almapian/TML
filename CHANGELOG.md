@@ -19,7 +19,7 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 **Outputs.**
 - 17 figures: `report_images/*_richmond*.pdf`.
 - Tables and training histories: `outputs/richmond/`.
-- Weights: `models/checkpoints/richmond/`. Not tracked in git; the scope is code and figures only.
+- Weights: `models/checkpoints/richmond/` (8 files, 1.6 MB). Tracked in git, like Southend's, at the user's request on 2026-10-13.
 
 **Findings** (test RMSE, m; full write-up in the results report):
 
