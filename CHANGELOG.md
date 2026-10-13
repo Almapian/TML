@@ -5,6 +5,48 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-10-13 — Richmond overnight run: results
+
+**The run.** `models/run_gauge.py` (Richmond, 72h cap) ran from 20:31 to 23:38 on 12 Oct (3 h 7 min). All 6 steps passed on the first attempt, with no retries.
+
+| Step | Time |
+|---|---|
+| train_stage2 | 87 min |
+| train_stage3 | 41 min |
+| plot_stage3 (incl. SHAP) | 11 min |
+| train_stage1 | 47 min |
+
+**Outputs.**
+- 17 figures: `report_images/*_richmond*.pdf`.
+- Tables and training histories: `outputs/richmond/`.
+- Weights: `models/checkpoints/richmond/`. Not tracked in git; the scope is code and figures only.
+
+**Findings** (test RMSE, m; full write-up in the results report):
+
+| | Richmond | Southend |
+|---|---|---|
+| Stage 2, 10min | 0.033 | 0.017 |
+| Stage 2, 24h | 0.256 | 0.223 |
+| Stage 2, 72h | 0.336 | 0.228 |
+| UTide standalone | 0.561 | 0.245 |
+| Stage 2 improvement over UTide at 72h | 40% | 6% |
+
+- Stage 2 is the best model at Richmond at every horizon.
+- Stage 3 is worse than stage 2 at Richmond.
+  - The meteo-fusion model overfits: best validation loss at epoch 1, early stopped at 11. Its 10-min RMSE is 0.312.
+  - The tide-only model is likely held back by its 30-horizon loss. Horizons up to 72h carry only 7% of its summed MSE at Richmond, against 14% at Southend. Its 10-min RMSE is 0.088.
+- SHAP: rainfall and discharge carry 14–17% of attribution at Richmond, against 2–5% at Southend.
+- Stage 1: the MLP's recursive rollout diverges at Richmond (34 m RMSE at 48h).
+- Every stage 1 and stage 2 Richmond model used the full 60 epochs. Gains near the end were small, under 1% over the last 10 epochs.
+
+**Suggested follow-ups, not done:**
+- A stage-3 retrain capped at 72h, to test the loss-share explanation.
+- Richmond-specific stage-3 hyperparameters.
+- A log y-axis for the stage-1 rollout figure.
+- Fixing the overlapping date labels on the stage-1 prediction figure.
+
+---
+
 ## 2026-10-12 — Second gauge (Richmond Lock), 72h report figures, laptop-safe runs
 
 ### Why
