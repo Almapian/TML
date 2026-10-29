@@ -58,6 +58,16 @@ def checkpoint_dir(gauge="southend"):
     return CHECKPOINTS_DIR if gauge == "southend" else CHECKPOINTS_DIR / gauge
 
 
+def dense_output_dir(gauge="southend"):
+    """Tables of the dense (continuous 0-72h) pipeline, apart from the main stages'."""
+    return (OUTPUTS_DIR if gauge == "southend" else OUTPUTS_DIR / gauge) / "dense"
+
+
+def dense_checkpoint_dir(gauge="southend"):
+    """Weights of the dense pipeline, so they never collide with the main checkpoints."""
+    return checkpoint_dir(gauge) / "dense"
+
+
 def ensure_dir(path):
     """Create `path` (and parents) if needed and return it as a Path."""
     path = Path(path)

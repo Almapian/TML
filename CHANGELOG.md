@@ -5,6 +5,97 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-10-28 — Dense (continuous 0–72h) pipeline: code, verification, overnight launch
+
+**Why.** The supervisor asked for continuous 72h forecasts. The design is in the Claude Doc "Dense 0–72h forecasting: current vs proposed decoder", section 9. The stage 2/3 models stay direct (non-autoregressive), and only the list of lead times changes: from 7 or 30 sparse lead times to 10min plus every hour to 72h (73). The output head is unchanged: it is already applied once per decoder step. Built as a separate pipeline, so no existing result or checkpoint is touched.
+
+**Code.**
+- `utils/models/config.py`:
+  - `DENSE_HORIZONS` (73 lead times).
+  - `DENSE_TAIL_DAYS`: an optional daily tail for stage 3, empty by default. Days 4–30 can be added, with `DENSE_TAIL_LOSS_SHARE` = 0.5 of the loss.
+  - `dense_stage3_decoder()`: lead point + targets + 3 padding points, giving 77 decoder points with no tail.
+  - `dense_horizon_weights()`.
+- `utils/paths.py`: `dense_output_dir` (`outputs/[<gauge>/]dense/`) and `dense_checkpoint_dir` (`models/checkpoints/[<gauge>/]dense/`).
+- `models/train_dense.py` (new): trains dense `TidalSeq2Seq` (stage 2 settings: lr 1e-3, batch 512) and dense `TidalSeq2SeqTideOnly`, whose lr / weight decay / batch come from that gauge's sparse tide-only checkpoint.
+  - Metrics at all 73 lead times plus UTide.
+  - A matched-anchor comparison with the existing sparse models: the anchors both test sets share, at 10min / 1h / 6h / 24h / 48h / 72h.
+  - All test predictions, and one 72h forecast issued 2022-02-17 12:00 (Storm Eunice).
+  - `TIDAL_SMOKE=1` runs a 1-epoch mechanics check.
+- `models/plot_dense.py` (new): two PNGs per gauge.
+  - `stages_rmse_at_stage1_leads`: every model from stage 1 to dense, at stage 1's 5 lead times. Colour = stage family, from a palette that passed the dataviz colour checks. Filled = direct or dense.
+  - `dense_72h_forecast`: one continuous 72h forecast against the observations.
+- `models/run_gauge.py`: `--pipeline {main,dense}`, repeatable `--gauge`, and `--redo`. With no flags, the main pipeline runs exactly as before. Dense logs and state go to `logs/<gauge>/dense/`.
+- `utils/plot_config.py`: `save_fig` now writes PNG (`FIG_FORMAT = 'png'`, 300 dpi) instead of PDF, at the user's request.
+
+**Verification (smoke runs, both gauges, then deleted).**
+- Tensor shapes: (N, 73) targets; stage 2 decoder input (N, 73); stage 3 decoder input (N, 77).
+- Parameter counts are identical to the sparse models (80,705 each).
+- The rebuilt sparse windows reproduce the published sparse RMSEs exactly: Richmond stage 2 at 10min 0.0329 m, stage 3 tide-only 0.0882 m; Southend stage 2 0.01726 m.
+- Feb-2022 issue time is valid at both gauges.
+- Tail option: 100 outputs, 104 decoder points, and the tail carries exactly 50% of the loss.
+- Timing benchmark on CPU, one batch of 512: dense 245 ms vs sparse 93 ms (stage 2) and 112 ms (stage 3). That is about 2 min per training epoch per dense model, so up to about 10h if all four models run the full 60 epochs.
+
+**Run.** `python models/run_gauge.py --pipeline dense --gauge richmond --gauge southend`, launched 2026-10-28 18:53. Console log: `logs/dense_run_console.log`.
+
+**Run outcome (2026-10-29).** All 4 steps passed on the first attempt, in 5.5 h total.
+
+| Gauge | Model | Stopped at epoch | Time |
+|---|---|---|---|
+| Richmond | stage 2 | 33 | 80 min |
+| Richmond | stage 3 tide-only | 27 | 60 min |
+| Southend | stage 2 | 45 | 89 min |
+| Southend | stage 3 tide-only | 48 | 100 min |
+
+**Outputs.**
+- Weights: `models/checkpoints/[richmond/]dense/`.
+- Tables: `outputs/[richmond/]dense/`.
+- Figures: `report_images/stages_rmse_at_stage1_leads[_richmond].png` and `report_images/dense_72h_forecast[_richmond].png`.
+
+**Headline results** (test RMSE, m, matched anchors):
+- Dense stage 2 is within ±2% of sparse stage 2 from 6h to 72h at both gauges. At 72h: Richmond 0.332 vs 0.336, Southend 0.236 vs 0.228.
+- It is worse at short leads. At 10min: Richmond 0.092 vs 0.033, Southend 0.049 vs 0.017.
+- Dense stage 3 tide-only beats sparse stage 3 tide-only at Richmond by 6–20% from 1h to 72h.
+- The 10-min error tracks the 10-min loss share (1/7, 1/30, 1/73), so the short-lead penalty comes from equal per-lead loss weighting.
+
+Write-ups (Claude Docs):
+- results: https://claude.ai/artifact/A44jSF5fPhpicfQQHuk8gG
+- methodology shortcomings: https://claude.ai/artifact/MRsuBTKSkPFVstKioFcLxm
+- newcomer explainer: https://claude.ai/artifact/QZWuuNgiCccFhaPNrjEFtW
+
+## 2026-10-18 — UTide option search (constituent set × fitting method), both gauges
+
+**Why.** The supervisor reported a better UTide fit for Richmond than our ~0.56 m test RMSE. All earlier work used `utide.solve` defaults: `constit='auto'` (68 constituents) and `method='ols'`. This step tests the alternatives on their own, before any model is retrained, so their effect on the harmonic baseline is known first.
+
+**Code.**
+- `utils/models/datasets.py`: `fit_utide` gains `constit`, `method` and `robust_kw`, passed straight to `utide.solve`. The defaults reproduce the old fit exactly, so every existing checkpoint and result is unchanged.
+- `src/utide_option_search.py` (new, standalone):
+  - Grid: `constit` ∈ {auto, auto + 22 shallow-water constituents} × `method` ∈ {ols, robust-cauchy, robust-fair, robust-bisquare}, fitted at stride 6.
+  - The extra 22 are UTide-table constituents outside the auto set: N4 3MS4 KN4 SL4, MNO5 2MO5 3MP5 MNK5 2MP5 MSK5 3KM5, 2NM6 MSN6 MKN6 NSK6 S6, M7, 3MN8 3MS8 3MK8, 4MK9, M10.
+  - Fits on train (2004–17), selects on validation RMSE (2018–20), and reports test (2021–24). Flagged points are excluded throughout.
+  - The winner and the previous configuration are refit at stride 1.
+  - Flags: `--smoke` (2-year fit) and `--plot-only` (redraw figures from the CSVs).
+- `robust-huber` was dropped: `huber()` in utide 0.3.1 calls `max()` on an array and always raises. `fair` is the closest gentle alternative.
+
+**How it was run.**
+- `python src/utide_option_search.py`: about 15 min for both gauges, log in `logs/utide_search/`.
+- Smoke test first (`--smoke`). In the 2-year fit, the trend term came out at −29 cm/yr, and extrapolating it gave a 2.15 m test RMSE at Richmond. For the real 14-year fit the trend is 0.7 cm/yr, and turning it off changes per-year errors by only a few cm, so `trend` was not added to the grid.
+
+**Results** (test RMSE, m, stride 1; full table in `outputs/<gauge>/utide_search/utide_option_search.csv`):
+
+| | previous (auto / ols) | validation winner | change |
+|---|---|---|---|
+| Richmond | 0.5587 | 0.5519 (auto+SW / ols) | −1.2% |
+| Southend | 0.2468 | 0.2436 (auto+SW / robust-fair) | −1.3% |
+
+- The stride-1 baseline reproduces the earlier UTide numbers: Richmond 0.559 here, against 0.548–0.561 in the stage 2/3 tables; Southend 0.247, against ~0.245. The small gaps come from those tables scoring windowed horizon targets rather than every row.
+- **Robust fitting makes Richmond worse** (test 0.583–0.601). River-raised low waters are frequent and systematic, not outliers. Down-weighting them fits the low-flow tide, which then misses every high-flow period. At Southend, robust helps very slightly (about 2 mm).
+- **Shallow-water constituents help both gauges**, a little. Richmond's largest new one is 3MS4 at 9.7 cm. M4 (43 cm) and MS4 (24 cm) were already in the auto set, so the main shallow-water signal was already being fitted.
+- **Conclusion.** Changing `constit` and `method` gains about 1%. It does not explain a much better supervisor fit. That more likely comes from how the fit is scored: in-sample (our train RMSE is 0.52 m at Richmond), a shorter fit window, or a subset such as high waters or low-flow periods. Per-year RMSE at Richmond, from the 14-year auto/ols fit, ranges from 0.38 to 0.73 m across 2004–2024 (test years 0.44–0.72 m) with river conditions.
+- Winners are in `outputs/<gauge>/utide_search/utide_choice.json`. Nothing in the modelling pipeline uses them.
+- **Decision (user, 2026-10-18): UTide stays unchanged (auto / ols) for both gauges.** The gain is about 1%, and keeping the fit means existing results and the stage 3 checkpoints stay valid. The search is kept as a reported sensitivity check.
+
+**Figures.** `report_images/utide_option_search_{richmond,southend}.png`: 300-dpi PNG dot plots of validation and test RMSE per option set. From now on, figures are PNG rather than PDF, at the user's request.
+
 ## 2026-10-13 — Richmond overnight run: results
 
 **The run.** `models/run_gauge.py` (Richmond, 72h cap) ran from 20:31 to 23:38 on 12 Oct (3 h 7 min). All 6 steps passed on the first attempt, with no retries.

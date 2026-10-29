@@ -12,7 +12,7 @@ Usage, near the top of each notebook (after IN_COLAB/OUTPUT_DIR are known):
 
 Then, at the end of any plot cell that used to end in `plt.savefig(some_path, ...); plt.show()`:
 
-    save_fig(plt.gcf(), 'a_short_name')  # writes report_images/a_short_name.pdf
+    save_fig(plt.gcf(), 'a_short_name')  # writes report_images/a_short_name.png
     plt.show()
 
 On Colab, `plot_config.py` itself needs to be reachable -- upload a copy to the same Drive
@@ -147,11 +147,14 @@ def _warn_if_labels_overflow(fig, name, width_in, height_in):
                       f"LaTeX caption instead.")
 
 
+FIG_FORMAT = "png"   # report figures as 300-dpi PNG (user preference, 2026-10-18); was "pdf"
+
+
 def save_fig(fig, name, width_in=6.3, height_in=None, **tight_layout_kwargs):
-    """width_in ~ \\textwidth at 11pt/a4paper w/ 25mm margins (~6.3in). Writes a PDF (vector,
-    proper embedded fonts) under the report-images directory set by `set_report_dir`. Multi-panel
-    figures should pass an explicit `height_in` rather than relying on the single-panel default
-    aspect ratio (`width_in * 0.62`)."""
+    """width_in ~ \\textwidth at 11pt/a4paper w/ 25mm margins (~6.3in). Writes a FIG_FORMAT
+    file (PNG at savefig.dpi = 300) under the report-images directory set by `set_report_dir`.
+    Multi-panel figures should pass an explicit `height_in` rather than relying on the
+    single-panel default aspect ratio (`width_in * 0.62`)."""
     if height_in is None:
         height_in = width_in * 0.62
     fig.set_size_inches(width_in, height_in)
@@ -162,7 +165,7 @@ def save_fig(fig, name, width_in=6.3, height_in=None, **tight_layout_kwargs):
     fig.tight_layout(**tight_layout_kwargs)
     _warn_if_labels_overflow(fig, name, width_in, height_in)
     os.makedirs(_report_dir, exist_ok=True)
-    path = os.path.join(_report_dir, f"{name}{_name_suffix}.pdf")
+    path = os.path.join(_report_dir, f"{name}{_name_suffix}.{FIG_FORMAT}")
     fig.savefig(path, bbox_inches="tight")
     print(f"saved {path}")
     return path

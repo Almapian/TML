@@ -131,6 +131,44 @@ DECODER_SEQ_STEPS = [0] + list(STAGE3_HORIZONS.values()) + [d * STEPS_PER_DAY fo
 DECODER_SEQ_LEN = len(DECODER_SEQ_STEPS)
 TARGET_SLICE_IN_DECODER = slice(1, 1 + len(STAGE3_HORIZONS))
 
+# --- dense (continuous 0-72h) pipeline: models/train_dense.py, models/plot_dense.py ---
+# Same models, but the decoder walks every hour to 72h (plus 10min) instead of a few sparse
+# lead times. Nothing in the architectures changes: the output head is already applied once
+# per decoder step, so only these lists do.
+DENSE_HORIZONS = {'10min': 1, **{f'{h}h': h * 6 for h in range(1, 73)}}   # 73 lead times
+# Optional daily tail for the dense stage-3 model, after the hourly block (e.g.
+# list(range(4, 31)) for days 4..30). Empty = a pure 0-72h forecaster. With a tail, the
+# loss is reweighted so the tail carries DENSE_TAIL_LOSS_SHARE of it, otherwise its 27
+# large-error days would swamp the hourly block.
+DENSE_TAIL_DAYS = []
+DENSE_TAIL_LOSS_SHARE = 0.5
+DENSE_PAD_STEPS = 3          # decoder points after the last target, as stage 3 pads past 30d
+
+
+def dense_stage3_decoder(tail_days=None):
+    """(horizons, decoder_seq_steps, target_slice) for the dense stage-3 decoder: a leading
+    point at the anchor, the hourly block (+ tail), then DENSE_PAD_STEPS padding points one
+    spacing past the last target, so no trained output sits at either end of the BiLSTM."""
+    tail_days = DENSE_TAIL_DAYS if tail_days is None else tail_days
+    horizons = dict(DENSE_HORIZONS)
+    horizons.update({f'{d}d': d * STEPS_PER_DAY for d in tail_days})
+    steps = list(horizons.values())
+    spacing = STEPS_PER_DAY if tail_days else 6
+    pad = [steps[-1] + spacing * (i + 1) for i in range(DENSE_PAD_STEPS)]
+    return horizons, [0] + steps + pad, slice(1, 1 + len(steps))
+
+
+def dense_horizon_weights(n_hourly, n_tail, tail_share=DENSE_TAIL_LOSS_SHARE):
+    """Mean-1 per-output loss weights giving the tail `tail_share` of the loss, or None
+    (plain equal weighting) when there is no tail."""
+    if n_tail == 0:
+        return None
+    n = n_hourly + n_tail
+    w = np.concatenate([np.full(n_hourly, (1 - tail_share) * n / n_hourly),
+                        np.full(n_tail, tail_share * n / n_tail)])
+    return torch.tensor(w, dtype=torch.float32)
+
+
 UTIDE_EXT_DAYS = 35          # UTide reconstruction buffer past the last gauge row
 DAILY_GRID_BUFFER_DAYS = 40  # daily meteo grid buffer, same reason
 

@@ -56,13 +56,19 @@ def split_chronological(df, train_end=TRAIN_END, val_end=VAL_END, verbose=True):
     return train_df, val_df, test_df
 
 
-def fit_utide(df, start=None, end=TRAIN_END, lat=SITE_LAT, stride=1, verbose=True):
+def fit_utide(df, start=None, end=TRAIN_END, lat=SITE_LAT, stride=1, verbose=True,
+              constit='auto', method='ols', robust_kw=None):
     """Solve for harmonic constituents over [start, end), excluding flagged points so the
     fit never learns from UTide's own past reconstruction.
 
     `stride` > 1 fits on every `stride`-th 10-minute slot of the clock (6 -> on the hour
     only). Memory scales with the number of rows fitted -- see GAUGES in config.py for why
     stride 6 is safe and what it changes.
+
+    `constit` ('auto' or a list of names), `method` ('ols' or 'robust') and `robust_kw`
+    (e.g. {'weight_function': 'huber'}) go straight to utide.solve. The defaults are the
+    fit every existing checkpoint was trained with; src/utide_option_search.py compares
+    the alternatives.
     """
     mask = df['DateTime'] < end
     if start is not None:
@@ -73,8 +79,9 @@ def fit_utide(df, start=None, end=TRAIN_END, lat=SITE_LAT, stride=1, verbose=Tru
 
     fit_series = df.loc[mask, 'Observed_ODN'].copy()
     fit_series[df.loc[mask, 'is_flagged']] = np.nan
-    coef = utide.solve(df.loc[mask, 'DateTime'], fit_series, lat=lat, method='ols', conf_int='none',
-                       verbose=False)
+    solve_kw = {'robust_kw': robust_kw} if robust_kw is not None else {}
+    coef = utide.solve(df.loc[mask, 'DateTime'], fit_series, lat=lat, constit=constit, method=method,
+                       conf_int='none', verbose=False, **solve_kw)
 
     if verbose:
         print(f"UTide fit on {mask.sum():,} rows (stride {stride}; "
