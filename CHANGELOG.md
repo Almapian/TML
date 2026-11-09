@@ -5,6 +5,51 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10: dense v2 variants (skip, pad, weighted loss): investigation, code, sanity runs
+
+### Why
+The dense model is worse than residual persistence at 10 min. Southend 10-min test RMSE (published) is 0.049 m dense vs 0.017 m sparse, and residual persistence gets 0.020 m. There is also a jump at the last lead (72h).
+
+### Investigation (no bug found)
+- Anchor/lead alignment, target times, the 10-min step, UTide placement and per-lead scaling were all checked on real Southend validation windows; all correct.
+- Loss imbalance confirmed: the 10-min lead is 0.064% (Southend) and 0.154% (Richmond) of the summed validation MSE.
+- 72h: the last BiLSTM step has no later context and no padding. Southend RMSE is flat from 61h to 70h, then jumps (validation 0.2231 / 0.2241 / 0.2279 at 70 / 71 / 72h).
+
+### Code (commits `961a545`, `639d5a4`, `191303f`)
+All variants are registered in `config.DENSE_VARIANTS`, every flag defaults off, and legacy checkpoints load unchanged (no new parameters).
+- `dense_v2_skip`: output = UTide(t+k) + obs(t) - UTide(t) + network correction.
+- `dense_v2_pad`: 3 hourly UTide steps past 72h, from a gap-free grid so anchors are unchanged, excluded from loss and scoring.
+- `dense_v2_skip_wloss`: skip plus the per-lead loss divided by the training residual-persistence MSE (normalised to mean 1).
+- v2 variants do not retrain dense stage 3.
+- `TIDAL_SANITY_EPOCHS=N` gives short runs into `*_sanityN` dirs.
+- Residual persistence is now a scored reference row.
+- Tests: `tests/test_dense_v2.py` 7/7, including "network output zeroed = residual persistence exactly". `test_stage3_windowing.py` 5/5 and `test_baselines.py` 12/12 still pass.
+
+### Sanity runs (Southend, 2 full epochs, validation only)
+`TIDAL_GAUGE=southend TIDAL_DENSE_VARIANT=<v> TIDAL_SANITY_EPOCHS=2 python models/train_dense.py`, logs in `logs/sanity/`, outputs in `outputs/<v>_sanity2/`. The sanity checkpoints were deleted afterwards.
+
+Validation RMSE at 10min / 1h / 24h / 72h (m):
+
+| Model | 10min | 1h | 24h | 72h |
+|---|---|---|---|---|
+| Old dense (fully trained) | 0.0458 | 0.0638 | 0.2182 | 0.2279 |
+| skip | 0.0488 | 0.1032 | 0.2378 | 0.2537 |
+| pad | 0.1517 | 0.1816 | 0.2339 | 0.2455 |
+| skip_wloss | 0.0229 | 0.0909 | 0.2790 | 0.3113 |
+| Residual persistence | 0.0197 | 0.0989 | 0.3128 | 0.3360 |
+
+- **dense_v2_skip fails the success criterion.** Its network adds a 4.3 cm rms correction with +1.3 cm bias at 10 min, because equal per-lead weighting still gives that lead almost no gradient.
+- The weighted loss fixes 10 min but lags at long leads after 2 epochs.
+- Report: `reports/2026-11-nov-fixes/02_dense_v2_sanity.md`.
+
+### Timing and RAM (measured, Southend)
+- Seconds per epoch: 91 to 92 (skip), 101 to 113 (pad), 115 to 122 (skip_wloss).
+- Peak RAM 6.7 GB for all three.
+- Projected full runs: about 53 to 110 min each; queue items 1 to 4 about 4.5h to 7.3h.
+
+### Test
+None of the dense v2 models was scored on test. The 72h table in the report lists the old model's already-published test numbers next to validation.
+
 ## 2026-11-10: decisions after the diagnostics; overnight queue plan and pre-registered selection rule
 
 ### Disclosure: future leak in the stage 3 discharge and rainfall inputs (dissertation results affected)

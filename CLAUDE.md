@@ -21,6 +21,8 @@ An MSc dissertation (UCL CEGE, submitted September 2026), now being turned into 
 | Dense | Stage 2 and stage 3 **tide-only** retargeted to 73 leads (10 min, then hourly to 72h; `DENSE_HORIZONS`). No meteo branches. | `models/train_dense.py`. Branch `dense-predictor`. Known issue: poor short-lead accuracy (CHANGELOG 2026-10-28 attributes it to equal per-lead loss weighting) |
 | Baselines | Classical linear forecasters on the dense pipeline's anchors, leads, masks and RMSE code | `utils/models/baselines.py`, `models/{identify,search,eval,plot}_baselines.py` |
 
+Dense variants are registered in `config.DENSE_VARIANTS` (`dense_v2_skip`, `dense_v2_pad`, `dense_v2_skip_wloss`), with every flag off by default. `TIDAL_SANITY_EPOCHS=N` runs a short check into `*_sanityN` dirs.
+
 The models are **direct** multi-horizon predictors, not recursive. Model classes are in `utils/models/architectures.py`; `utils/models/layers.py` holds only the shared `Encoder` and `BatchedAttention`.
 
 ## Data and evaluation rules (non-negotiable)
