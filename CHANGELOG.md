@@ -5,6 +5,60 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-10-30: classical baselines (ARIMA, GP, dynamic harmonic, ridge)
+
+### Why
+Reviewers asked whether simpler statistical methods were tried before the neural networks. This adds tuned classical forecasters on the dense pipeline's splits, anchors, lead times, masks and metrics, for both gauges, forecasting both the full level and the UTide residual.
+
+### Environment
+- Installed into the conda `geospatial` env: `optuna` 5.0.0, which brought `alembic`, `colorlog`, `Mako` and `sqlalchemy`. No existing package was changed.
+
+### Code
+- New: `utils/models/baselines.py`, `models/identify_baselines.py`, `models/search_baselines.py`, `models/eval_baselines.py`, `models/plot_baselines.py`, `tests/test_baselines.py`.
+- Changed: `config.py` (`BASELINE_*`), `paths.py`, `run_gauge.py` (`baselines` pipeline), `README.md`.
+
+### Decisions
+- Five forecasters fill the four planned slots: long AR and SARIMA both report under "ARIMA", then GP, dynamic harmonic and direct ridge.
+- All are linear predictors. The gap to the neural models therefore measures what nonlinearity plus UTide-as-input adds.
+- AR, GP and ridge are also searched at the neural models' 16h history ("parity"), because the pilot showed history length dominates.
+- `load_series(upto=...)` cuts the arrays, so identification sees only train and the search cannot reach test.
+- Gaps in history are filled causally by each method's own forecast.
+
+### Findings from identification (train only)
+- ACF peaks are at lags 149 and 4174 at both gauges (Richmond residual 4173). That is 2 x M2 and 56 x M2, not the 57 x M2 first assumed, so the search uses the measured lags.
+- Southend level: AIC and BIC both pick AR order 8425 (~58 days). Richmond level: BIC 448, AIC 19618.
+- Bug caught by the evidence: the first GP fit lost its memory after ~6 days and, on the residual at Q=32, collapsed to a constant kernel. Fixed by fixing line centres, modelling the Hann window's width separately from the kernel's, and bounding the OU rate. Southend level ACF RMSE went from ~0.50 to 0.067.
+- Limitation: the Richmond residual kernel stays at ACF RMSE ~0.22 for every Q and either choice of centres. A stationary kernel cannot represent river-modulated tides there.
+- GP ACF fit is not monotonic in Q (Richmond level: 0.06 to 0.49), so Whittle fits have local optima. Validation error makes the choice.
+
+### Verification
+- `tests/test_baselines.py` covers agreement with statsmodels (ACF, PACF, SARIMAX, Kalman filter), a dense Cholesky GP and sklearn ridge, plus synthetic recovery, gap filling, anchor rule and no-future-leakage checks.
+- Smoke run on Richmond: re-scoring reproduced `dense_metrics.csv` to 3e-08 m (dense stage 2) and 7e-08 m (UTide).
+- Disclosure: the smoke run used 2 random trials per study and printed test RMSEs. Those were looked at to confirm the code works; no search range or method choice was changed after seeing them, and the code has not been changed for performance since.
+
+### Search rounds
+- Round 1 left 31 winners per gauge on a range edge. A pipeline design error then ran test evaluation before those were reviewed. Those test tables were not opened and have been overwritten. Test evaluation is now the separate `baselines_eval` pipeline.
+- Round 2 (`*_x` studies, seeded with the round 1 winner): history to 1 year, GP Q and dynamic harmonic K to 128, wider SARIMA orders and continuous ranges. Optuna cannot widen categorical choices inside a study, so these are new studies; round 1 CSVs are kept.
+- Round 3 (`*_y`, Richmond ridge only): 2-year history, because Richmond level still gained at 1 year. It was worse (0.332 m vs 0.300 m validation), so 1 year stands.
+- Left on edges: binary d/D terms, the 16h parity cap, ridge spacing and lambda (no numerical effect), and some noisy Richmond GP and dynamic harmonic settings. SARIMA hit its 2h cap at 16-21 trials in each round 2 study, target 80.
+
+### Results (test RMSE, m)
+- Southend: long AR residual beats Dense stage 2 at 71 of 73 leads, significantly at 57, none significantly worse. 72h: 0.225 vs 0.238.
+- Richmond: Dense stage 2 wins beyond about 1h, significantly at 71 leads. 72h: 0.332 vs 0.352.
+- Held to 16h history, no classical model beats Dense stage 2 beyond 1h (Southend) or 10min (Richmond).
+- No classical model compounds like stage 1. Closeness rule, set before reading test scores: within 10% of the best NN at 72h and on average. 7 of 10 pass at Southend, 2 of 10 at Richmond.
+- Full write-up: Claude Doc "Classical baselines vs neural networks", https://claude.ai/artifact/Rw37PWinNtXkBrLxdDsCMN
+
+### To run
+```powershell
+& C:\Users\alfat\anaconda3\envs\geospatial\python.exe models/run_gauge.py --pipeline baselines --gauge southend --gauge richmond
+# review outputs[/<gauge>]/baselines/search/edge_winners.csv and search_shortfall.csv, then:
+& C:\Users\alfat\anaconda3\envs\geospatial\python.exe models/run_gauge.py --pipeline baselines_eval --gauge southend --gauge richmond
+```
+Logs: `logs/<gauge>/baselines/` and `logs/<gauge>/baselines_eval/`. Add `--redo` to re-run finished steps. Round 3: `TIDAL_GAUGE=richmond TIDAL_BASELINE_METHODS=ridge TIDAL_BASELINE_ROUND=_y python models/search_baselines.py`.
+
+---
+
 ## 2026-10-28 — Dense (continuous 0–72h) pipeline: code, verification, overnight launch
 
 **Why.** The supervisor asked for continuous 72h forecasts. The design is in the Claude Doc "Dense 0–72h forecasting: current vs proposed decoder", section 9. The stage 2/3 models stay direct (non-autoregressive), and only the list of lead times changes: from 7 or 30 sparse lead times to 10min plus every hour to 72h (73). The output head is unchanged: it is already applied once per decoder step. Built as a separate pipeline, so no existing result or checkpoint is touched.

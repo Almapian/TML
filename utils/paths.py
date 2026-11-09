@@ -68,6 +68,16 @@ def dense_checkpoint_dir(gauge="southend"):
     return checkpoint_dir(gauge) / "dense"
 
 
+def baseline_output_dir(gauge="southend"):
+    """Tables of the classical-baselines pipeline (identification, search, evaluation)."""
+    return (OUTPUTS_DIR if gauge == "southend" else OUTPUTS_DIR / gauge) / "baselines"
+
+
+def baseline_config_path(gauge="southend"):
+    """The frozen hyperparameter winners: tracked, unlike the rest of outputs/."""
+    return checkpoint_dir(gauge) / "baselines" / "best_configs.json"
+
+
 def ensure_dir(path):
     """Create `path` (and parents) if needed and return it as a Path."""
     path = Path(path)

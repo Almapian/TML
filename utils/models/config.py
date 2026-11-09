@@ -176,5 +176,24 @@ DAILY_GRID_BUFFER_DAYS = 40  # daily meteo grid buffer, same reason
 METEO_LOOKBACK_HOURS = 120   # 5 days; EDA/meteo_eda.ipynb s.2.3: pressure ACF < 0.2 by ~121h
 RIVER_LOOKBACK_DAYS = 30     # comfortably longer than the ~2-day rainfall -> discharge lag
 
+# --- classical baselines: models/identify_baselines.py, search_baselines.py, eval_baselines.py ---
+# Starting search ranges; models/identify_baselines.py can widen them per gauge and track
+# (identified_ranges.json), and any winner on a range edge means that range gets extended.
+BASELINE_TRACKS = ('level', 'residual')     # A: Observed_ODN itself; B: Observed_ODN - UTide
+BASELINE_METHODS = ('ar', 'sarima', 'gp', 'dhr', 'ridge')
+BASELINE_PARITY_METHODS = ('ar', 'gp', 'ridge')   # also searched with history capped at LOOKBACK
+BASELINE_SEASONS = (149, 4248)              # starting values, 2 x M2 and 57 x M2 (29.5 d); identification
+                                            # measures the ACF peaks, 149 and 4174 at both gauges
+# lags: 16h, 3.1d, 15d, 30d, 60d, 90d, then 120d, 180d, 1y from the first search's edge winners
+BASELINE_HISTORY_GRID = (96, 449, 2160, 4320, 8640, 13000, 17280, 26000, 52560)
+BASELINE_RIDGE_LONG_HISTORY = 105120        # 2y: only ridge, where Richmond level still gained at 1y
+BASELINE_SEARCH_ANCHOR_STRIDE = 6           # hourly validation anchors during the search
+BASELINE_RIDGE_TRAIN_STRIDE = TRAIN_STRIDE
+BASELINE_TRIALS = {'ar': 40, 'sarima': 80, 'gp': 40, 'dhr': 80, 'ridge': 60}
+BASELINE_PARITY_TRIALS = 15
+BASELINE_TIMEOUT_S = 2 * 3600               # per study: the runtime stop rule
+BASELINE_BOOTSTRAP_REPS = 2000
+BASELINE_BOOTSTRAP_BLOCK_DAYS = 7
+
 # --- reduced-training-window ablation (stage 2 s.13.3, stage 3 s.12) ---
 REDUCED_TRAIN_STARTS = {'3yr': '2015-01-01', '7yr': '2011-01-01', '10yr': '2008-01-01'}

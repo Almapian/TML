@@ -4,11 +4,15 @@
     python models/run_gauge.py --pipeline dense --gauge richmond --gauge southend
 
 Each step runs as its own process, with TIDAL_GAUGE / TIDAL_MAX_HORIZON_H passed to every
-script. Two pipelines:
+script. Four pipelines:
 
-    main   data cleaning (only if the gauge's cleaned CSV doesn't exist yet), then
-           train_stage2 -> plot_stage2 -> train_stage3 -> plot_stage3 -> train_stage1 -> plot_stage1
-    dense  train_dense -> plot_dense (continuous 0-72h forecasts; see models/train_dense.py)
+    main       data cleaning (only if the gauge's cleaned CSV doesn't exist yet), then
+               train_stage2 -> plot_stage2 -> train_stage3 -> plot_stage3 -> train_stage1 -> plot_stage1
+    dense      train_dense -> plot_dense (continuous 0-72h forecasts; see models/train_dense.py)
+    baselines  identify_baselines -> search_baselines
+               (classical comparators, validation only; stops so edge winners get reviewed)
+    baselines_eval  eval_baselines -> plot_baselines
+               (the test evaluation; needs the dense pipeline's saved predictions)
 
 Gauges given with --gauge run one after another, in the order given; with none, the CONFIG
 GAUGE is used. Stage 2 goes first in the main pipeline because it is the core result; each
@@ -72,6 +76,14 @@ PIPELINES = {
     'dense': [
         ('train_dense', 'models/train_dense.py'),
         ('plot_dense', 'models/plot_dense.py'),
+    ],
+    'baselines': [
+        ('identify_baselines', 'models/identify_baselines.py'),
+        ('search_baselines', 'models/search_baselines.py'),
+    ],
+    'baselines_eval': [
+        ('eval_baselines', 'models/eval_baselines.py'),
+        ('plot_baselines', 'models/plot_baselines.py'),
     ],
 }
 # per gauge: the script that writes its cleaned CSV, run first if that CSV is missing

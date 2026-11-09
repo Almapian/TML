@@ -168,6 +168,19 @@ scripts' own CONFIG defaults stay at Southend. A failed step is retried (up to 3
 resuming rather than restarting. Logs go to `logs/<gauge>/`. Re-launching skips the steps
 already done. See `CHANGELOG.md` for the full set-up record.
 
+### Classical baselines
+
+`models/run_gauge.py --pipeline baselines` compares tuned classical forecasters with the
+dense models on the same anchors, lead times and masks: long AR, SARIMA, a spectral-mixture
+Gaussian process, dynamic harmonic regression and direct ridge autoregression. Each forecasts
+the water level and the UTide residual. It runs two steps, then `--pipeline baselines_eval`
+runs the last two once edge winners are reviewed: `identify_baselines.py` (ACF,
+PACF, stationarity tests and spectra on the training split, the evidence for each search
+range), `search_baselines.py` (validation only), `eval_baselines.py` (test, from the frozen
+configs) and `plot_baselines.py`. It needs the dense pipeline's saved predictions and
+`optuna`. Evidence is in `outputs[/<gauge>]/baselines/identification/`, and the frozen
+winners are in `models/checkpoints[/<gauge>]/baselines/best_configs.json`.
+
 ### Rebuilding the data
 
 ```bash
@@ -195,3 +208,4 @@ apart:
 | `utils/models/windowing.py` | Sliding-window construction (never crossing a data gap) |
 | `utils/models/datasets.py` | Loading, splitting, UTide fitting, scaling → ready-to-train tensors |
 | `utils/models/training.py` | Training loop, masked losses, metrics, checkpoint handling |
+| `utils/models/baselines.py` | Classical forecasters and the linear forecasting engine |
