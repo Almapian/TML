@@ -208,14 +208,18 @@ class Stage2Data:
     train_tensors_flat: dict
     val_tensors_flat: dict
     test_tensors_flat: dict
+    Ua_test: np.ndarray = None     # UTide at each test anchor (dense v2)
 
 
 def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_STRIDE,
-                   data_path=None, verbose=True, gauge='southend', utide_fit_stride=None):
+                   data_path=None, verbose=True, gauge='southend', utide_fit_stride=None,
+                   with_anchor_utide=False):
     """Stage 2: UTide fit on train only, reconstructed across the full span and used both
     as the decoder input feature and as the standalone UTide comparator.
 
-    `utide_fit_stride=None` uses the gauge's default from config.GAUGES."""
+    `utide_fit_stride=None` uses the gauge's default from config.GAUGES.
+    Dense v2 option (off by default, which reproduces the original tensors exactly):
+      with_anchor_utide  add 'Ua' (UTide at the anchor, scaled) to every tensor dict."""
     info = gauge_info(gauge)
     stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
     df = load_gauge_df(data_path or info['csv'], verbose=verbose)
@@ -227,17 +231,23 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
 
     train_df, val_df, test_df = split_chronological(df, verbose=verbose)
 
-    X_train, Ydec_train, Y_train, Flag_train, _ = build_windows_multi(train_df, lookback, horizon_steps)
-    X_val, Ydec_val, Y_val, Flag_val, _ = build_windows_multi(val_df, lookback, horizon_steps)
-    X_test, Ydec_test, Y_test, Flag_test, Time_test = build_windows_multi(test_df, lookback, horizon_steps)
+    def _windows(split_df):
+        return build_windows_multi(split_df, lookback, horizon_steps, return_anchor_utide=True)
 
-    X_train, Ydec_train, Y_train, Flag_train = (
+    X_train, Ydec_train, Y_train, Flag_train, T_train, Ua_train = _windows(train_df)
+    X_val, Ydec_val, Y_val, Flag_val, T_val, Ua_val = _windows(val_df)
+    X_test, Ydec_test, Y_test, Flag_test, Time_test, Ua_test = _windows(test_df)
+
+    X_train, Ydec_train, Y_train, Flag_train, T_train, Ua_train = (
         X_train[::train_stride], Ydec_train[::train_stride],
         Y_train[::train_stride], Flag_train[::train_stride],
+        T_train[::train_stride], Ua_train[::train_stride],
     )
     if verbose:
         print(f"windows -> train: {X_train.shape} (stride {train_stride}), "
               f"val: {X_val.shape}, test: {X_test.shape}")
+
+    Ydec_in = {'train': Ydec_train, 'val': Ydec_val, 'test': Ydec_test}
 
     train_mean = float(train_df['Observed_ODN'].mean())
     train_std = float(train_df['Observed_ODN'].std())
@@ -247,24 +257,29 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
     def sc(a):
         return (a - train_mean) / train_std
 
-    train_tensors = {'X': to_tensor(sc(X_train), device), 'Ydec': to_tensor(sc(Ydec_train), device),
+    train_tensors = {'X': to_tensor(sc(X_train), device), 'Ydec': to_tensor(sc(Ydec_in['train']), device),
                      'Y': to_tensor(sc(Y_train), device),
                      'Flag': to_tensor(Flag_train, device, dtype=torch.bool)}
-    val_tensors = {'X': to_tensor(sc(X_val), device), 'Ydec': to_tensor(sc(Ydec_val), device),
+    val_tensors = {'X': to_tensor(sc(X_val), device), 'Ydec': to_tensor(sc(Ydec_in['val']), device),
                    'Y': to_tensor(sc(Y_val), device),
                    'Flag': to_tensor(Flag_val, device, dtype=torch.bool)}
-    test_tensors = {'X': to_tensor(sc(X_test), device), 'Ydec': to_tensor(sc(Ydec_test), device)}
+    test_tensors = {'X': to_tensor(sc(X_test), device), 'Ydec': to_tensor(sc(Ydec_in['test']), device)}
+    if with_anchor_utide:
+        train_tensors['Ua'] = to_tensor(sc(Ua_train), device)
+        val_tensors['Ua'] = to_tensor(sc(Ua_val), device)
+        test_tensors['Ua'] = to_tensor(sc(Ua_test), device)
 
     # the flat stage-1 comparators take no decoder input
-    train_tensors_flat = {k: v for k, v in train_tensors.items() if k != 'Ydec'}
-    val_tensors_flat = {k: v for k, v in val_tensors.items() if k != 'Ydec'}
+    train_tensors_flat = {k: v for k, v in train_tensors.items() if k not in ('Ydec', 'Ua')}
+    val_tensors_flat = {k: v for k, v in val_tensors.items() if k not in ('Ydec', 'Ua')}
     test_tensors_flat = {'X': test_tensors['X']}
 
     return Stage2Data(df, train_df, val_df, test_df, coef,
                       X_test, Ydec_test, Y_test, Flag_test, Time_test,
                       train_mean, train_std,
                       train_tensors, val_tensors, test_tensors,
-                      train_tensors_flat, val_tensors_flat, test_tensors_flat)
+                      train_tensors_flat, val_tensors_flat, test_tensors_flat,
+                      Ua_test)
 
 
 def prepare_stage2_reduced(device, df, train_start, horizon_steps, lookback=LOOKBACK,

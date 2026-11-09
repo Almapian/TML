@@ -45,9 +45,12 @@ def build_windows(sub_df, lookback):
     return X, y, flag, time
 
 
-def build_windows_multi(sub_df, lookback, horizon_steps):
+def build_windows_multi(sub_df, lookback, horizon_steps, return_anchor_utide=False):
     """Stage 2: (X, Ydec, Y, Flag, Time), one target and one UTide decoder feature per
     horizon. Requires a `utide_recon` column alongside `Observed_ODN`.
+
+    With `return_anchor_utide`, also returns Uanc: UTide at each window's anchor, the time of
+    its last encoder value X[:, -1] (used by the dense v2 residual-persistence skip).
     """
     sub_df = sub_df.reset_index(drop=True)
     is_gap = sub_df['DateTime'].diff() > STEP
@@ -61,7 +64,7 @@ def build_windows_multi(sub_df, lookback, horizon_steps):
     max_h = max(horizon_steps)
     horizon_arr = np.array(horizon_steps)
 
-    X_list, Ydec_list, Y_list, Flag_list, Time_list = [], [], [], [], []
+    X_list, Ydec_list, Y_list, Flag_list, Time_list, Uanc_list = [], [], [], [], [], []
     for seg in np.unique(seg_id):
         idx = np.where(seg_id == seg)[0]
         n = len(idx)
@@ -70,6 +73,8 @@ def build_windows_multi(sub_df, lookback, horizon_steps):
 
         seg_values = values[idx]
         seg_utide = utide_vals[idx]
+        if return_anchor_utide:
+            Uanc_list.append(seg_utide[lookback - 1:lookback - 1 + n - lookback - max_h + 1])
         seg_flag = flagged[idx]
         seg_time = times[idx]
 
@@ -91,6 +96,8 @@ def build_windows_multi(sub_df, lookback, horizon_steps):
     Y = np.concatenate(Y_list, axis=0)
     Flag = np.concatenate(Flag_list, axis=0)
     Time = np.concatenate(Time_list, axis=0)
+    if return_anchor_utide:
+        return X, Ydec, Y, Flag, Time, np.concatenate(Uanc_list, axis=0)
     return X, Ydec, Y, Flag, Time
 
 

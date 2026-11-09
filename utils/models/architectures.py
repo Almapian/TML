@@ -101,19 +101,39 @@ class TidalDecoder(nn.Module):
         return self.out(combined).squeeze(-1), weights        # (B, H)
 
 
+def residual_persistence(x_hist, utide_targets, utide_anchor):
+    """UTide at each target time plus the residual observed at the anchor:
+    UTide(t+k) + (obs(t) - UTide(t)). x_hist[:, -1] is the observation at the anchor t, so
+    this uses no data after the anchor. Works in scaled units, because observations and UTide
+    share one scaler and the offset cancels in the difference."""
+    return utide_targets + (x_hist[:, -1] - utide_anchor).unsqueeze(-1)
+
+
 class TidalSeq2Seq(nn.Module):
-    """Stage 2: LSTM encoder + attention + BiLSTM decoder fed known-future UTide values."""
+    """Stage 2: LSTM encoder + attention + BiLSTM decoder fed known-future UTide values.
+
+    Dense v2 option, off by default (the original model, and its checkpoints, unchanged; it
+    adds no parameters):
+      residual_skip  output = residual persistence + network output, so the network learns a
+                     correction to UTide(t+k) + (obs(t) - UTide(t)). forward() then needs
+                     `utide_anchor`, UTide at the anchor time.
+    """
 
     def __init__(self, enc_hidden_size=ENC_HIDDEN_SIZE, enc_num_layers=ENC_NUM_LAYERS,
                  dec_hidden_size=DEC_HIDDEN_SIZE, dec_num_layers=DEC_NUM_LAYERS,
-                 attn_dim=ATTN_DIM_TIDE):
+                 attn_dim=ATTN_DIM_TIDE, residual_skip=False):
         super().__init__()
         self.encoder = Encoder(1, enc_hidden_size, enc_num_layers)
         self.decoder = TidalDecoder(1, dec_hidden_size, enc_hidden_size, dec_num_layers, attn_dim)
+        self.residual_skip = residual_skip
 
-    def forward(self, x_hist, utide_future):
+    def forward(self, x_hist, utide_future, utide_anchor=None):
         enc_outputs, enc_final = self.encoder(x_hist.unsqueeze(-1))
         preds, weights = self.decoder(utide_future.unsqueeze(-1), enc_outputs, enc_final)
+        if self.residual_skip:
+            if utide_anchor is None:
+                raise ValueError('residual_skip needs utide_anchor (UTide at the anchor time)')
+            preds = preds + residual_persistence(x_hist, utide_future, utide_anchor)
         return preds, weights
 
 

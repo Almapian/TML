@@ -15,6 +15,7 @@ Two entry points matter for the scripts:
 """
 import json
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -138,6 +139,7 @@ def train_model(model, predict_fn, train_tensors, val_tensors, epochs, batch_siz
         if finished:
             break
         model.train()
+        t_epoch = time.time()
         running_loss, n_seen = 0.0, 0
         for batch in batch_iter(train_tensors, batch_size, shuffle=True):
             opt.zero_grad()
@@ -176,7 +178,7 @@ def train_model(model, predict_fn, train_tensors, val_tensors, epochs, batch_siz
             epochs_no_improve += 1
 
         print(f"[{label}] epoch {epoch + 1:03d}  train_loss={train_loss:.5f}  val_loss={val_loss:.5f}"
-              f"  lr={opt.param_groups[0]['lr']:.1e}{'  *' if improved else ''}")
+              f"  lr={opt.param_groups[0]['lr']:.1e}  {time.time() - t_epoch:.0f}s{'  *' if improved else ''}")
 
         stop = epochs_no_improve >= patience
         _checkpoint(epoch, done=stop)   # an exhausted epoch budget needs no flag: range() is empty

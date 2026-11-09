@@ -81,6 +81,8 @@ tables = {
     'stage3': long(pd.read_csv(paths.stage_output_dir(3, GAUGE) / 'stage3_metrics.csv')),
     'dense': long(pd.read_csv(DENSE_DIR / 'dense_metrics.csv')),
 }
+# a variant that retrains only stage 2 has no dense stage 3 rows: drop what its table lacks
+ROWS = [r for r in ROWS if r[5] in tables[r[4]].index]
 grid = pd.DataFrame([[tables[src].loc[name, lead] for lead in LEADS] for _, _, _, _, src, name in ROWS],
                     index=[r[0] for r in ROWS], columns=LEADS)
 grid.index.name = 'model'
@@ -109,7 +111,9 @@ for ax, lead in zip(axes, LEADS):
     ax.set_title(lead, fontsize=10)
     ax.grid(axis='y', visible=False)
     ax.tick_params(axis='x', labelsize=7)
-    for sep in (len(ROWS) - 1.5, len(ROWS) - 4.5, len(ROWS) - 6.5, len(ROWS) - 8.5):   # between family blocks
+    # between family blocks, and between recursive and direct stage 1 models (as originally drawn)
+    for sep in [y[i] + 0.5 for i in range(1, len(ROWS))
+                if ROWS[i][1] != ROWS[i - 1][1] or (ROWS[i][1] == 'stage1' and ROWS[i][3] != ROWS[i - 1][3])]:
         ax.axhline(sep, color='0.85', lw=0.6, zorder=0)
 axes[0].set_yticks(y, [r[0] for r in ROWS], fontsize=8)
 fig.supxlabel('Test RMSE (m, log scale)', fontsize=10, y=0.07)

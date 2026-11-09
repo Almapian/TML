@@ -175,6 +175,26 @@ DENSE_VARIANT = DENSE_LEGACY_VARIANT
 DENSE_VARIANT_PATTERN = r'dense(_[a-z0-9]+)*'
 
 
+# What each dense variant changes. Every flag defaults to off (= the legacy model); a variant
+# changes ONE thing about the stage 2 model relative to 'dense' so its result can be attributed
+# (train_stage3 only decides whether the unchanged stage 3 tide-only model is retrained).
+#   residual_skip      stage 2 output = residual persistence + network correction
+#   train_stage3       also (re)train the dense stage 3 tide-only model. The v2 variants only
+#                      change stage 2, so retraining stage 3 would just repeat the legacy model.
+DENSE_VARIANT_DEFAULTS = {'residual_skip': False, 'train_stage3': True}
+DENSE_VARIANTS = {
+    'dense': {},
+    'dense_v2_skip': {'residual_skip': True, 'train_stage3': False},
+}
+
+
+def dense_variant_flags(name):
+    """The full flag set for a registered dense variant."""
+    if name not in DENSE_VARIANTS:
+        raise ValueError(f"dense variant {name!r} is not registered in config.DENSE_VARIANTS ({list(DENSE_VARIANTS)})")
+    return {**DENSE_VARIANT_DEFAULTS, **DENSE_VARIANTS[name]}
+
+
 def dense_variant(name=None):
     """Validate a dense variant name (default: env TIDAL_DENSE_VARIANT, else DENSE_VARIANT)."""
     import re
