@@ -111,6 +111,17 @@ class MeteoGrids:
     discharge_avail: np.ndarray
     meteo_lookback_hours: int
     river_lookback_days: int
+    river_lag_hours: int = 0     # see config.RIVER_AVAILABILITY_LAG_HOURS
+
+
+def river_day_index(anchor_time, daily_start, river_lag_hours):
+    """Index into the daily river grid of the latest value an anchor may use: the value dated
+    D becomes usable `river_lag_hours` after 00:00 on D (33h for NRFA's 09:00-09:00 GMT water
+    day; 0 = the original calendar-day mapping)."""
+    usable = np.asarray(anchor_time) - np.timedelta64(int(river_lag_hours), 'h')
+    return np.floor(
+        (usable.astype('datetime64[D]') - np.datetime64(daily_start, 'D')) / np.timedelta64(1, 'D')
+    ).astype(np.int64)
 
 
 def gather_window(full_arr, end_idx, length):
@@ -180,9 +191,7 @@ def build_windows_stage3(sub_df, lookback, horizon_steps, grids, utide_full, uti
     Ydec_dense = utide_full[anchor_utide_idx[:, None] + dec_offsets[None, :]]
 
     anchor_hourly_idx = np.floor((anchor_time - grids.hourly_start) / np.timedelta64(1, 'h')).astype(np.int64)
-    anchor_daily_idx = np.floor(
-        (anchor_time.astype('datetime64[D]') - grids.daily_start.astype('datetime64[D]')) / np.timedelta64(1, 'D')
-    ).astype(np.int64)
+    anchor_daily_idx = river_day_index(anchor_time, grids.daily_start, grids.river_lag_hours)
 
     valid = ((anchor_hourly_idx - (grids.meteo_lookback_hours - 1) >= 0)
              & (anchor_daily_idx - (grids.river_lookback_days - 1) >= 0))

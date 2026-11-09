@@ -214,6 +214,13 @@ DAILY_GRID_BUFFER_DAYS = 40  # daily meteo grid buffer, same reason
 # --- stage 3 branch lookbacks ---
 METEO_LOOKBACK_HOURS = 120   # 5 days; EDA/meteo_eda.ipynb s.2.3: pressure ACF < 0.2 by ~121h
 RIVER_LOOKBACK_DAYS = 30     # comfortably longer than the ~2-day rainfall -> discharge lag
+# NRFA daily values are water-day means, 09:00 to 09:00 GMT, dated by the day they start, so
+# the value dated D is only complete at 09:00 on D+1. An anchor may use the value dated D only
+# from D + RIVER_AVAILABILITY_LAG_HOURS (33h after 00:00 on D). 0 reproduces the original
+# calendar-day mapping, which leaked up to 33h of future river data; every checkpoint trained
+# before 2026-11-09 used 0, so pass river_lag_hours=0 to reproduce them exactly.
+RIVER_AVAILABILITY_LAG_HOURS = 33
+LEGACY_RIVER_LAG_HOURS = 0
 
 # --- classical baselines: models/identify_baselines.py, search_baselines.py, eval_baselines.py ---
 # Starting search ranges; models/identify_baselines.py can widen them per gauge and track

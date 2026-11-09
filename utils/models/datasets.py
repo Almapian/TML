@@ -17,7 +17,7 @@ import utide
 
 from .. import paths
 from .config import (DAILY_GRID_BUFFER_DAYS, GAUGE_USECOLS, LOOKBACK, METEO_LOOKBACK_HOURS,
-                     RIVER_LOOKBACK_DAYS, SITE_LAT, STEP, TRAIN_END, TRAIN_STRIDE, UTIDE_EXT_DAYS,
+                     RIVER_AVAILABILITY_LAG_HOURS, RIVER_LOOKBACK_DAYS, SITE_LAT, STEP, TRAIN_END, TRAIN_STRIDE, UTIDE_EXT_DAYS,
                      VAL_END, gauge_info)
 from .windowing import MeteoGrids, build_windows, build_windows_multi, build_windows_stage3
 
@@ -342,7 +342,8 @@ def load_meteo(meteo_dir=None, verbose=True, site='Southend Pier'):
 
 def build_meteo_grids(df, pressure, wind, rainfall, discharge, train_end=TRAIN_END,
                       meteo_lookback_hours=METEO_LOOKBACK_HOURS,
-                      river_lookback_days=RIVER_LOOKBACK_DAYS, verbose=True):
+                      river_lookback_days=RIVER_LOOKBACK_DAYS, river_lag_hours=RIVER_AVAILABILITY_LAG_HOURS,
+                      verbose=True):
     """Hourly pressure/wind and daily rainfall/discharge on complete grids.
 
     Rainfall stops 2023-12-31 and discharge 2024-09-30 (both inside the test split); the
@@ -399,6 +400,7 @@ def build_meteo_grids(df, pressure, wind, rainfall, discharge, train_end=TRAIN_E
         discharge_avail=disc_avail_s.to_numpy(dtype=np.float32),
         meteo_lookback_hours=meteo_lookback_hours,
         river_lookback_days=river_lookback_days,
+        river_lag_hours=river_lag_hours,
     )
 
 
@@ -433,16 +435,21 @@ class Stage3Data:
 
 def prepare_stage3(device, horizon_steps, decoder_seq_steps, target_slice, lookback=LOOKBACK,
                    train_stride=TRAIN_STRIDE, data_path=None, meteo_dir=None, verbose=True,
-                   gauge='southend', utide_fit_stride=None):
+                   gauge='southend', utide_fit_stride=None, river_lag_hours=None):
     """Stage 3: multi-resolution windows (tide 10-min, meteo hourly, river daily) plus the
     padded UTide decoder sequence, all scaled with train-split statistics.
 
-    `utide_fit_stride=None` uses the gauge's default from config.GAUGES."""
+    `utide_fit_stride=None` uses the gauge's default from config.GAUGES. `river_lag_hours=None`
+    uses config.RIVER_AVAILABILITY_LAG_HOURS (no leakage); pass config.LEGACY_RIVER_LAG_HOURS (0)
+    to reproduce checkpoints trained before 2026-11-09."""
     info = gauge_info(gauge)
     stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
+    lag = RIVER_AVAILABILITY_LAG_HOURS if river_lag_hours is None else river_lag_hours
     df = load_gauge_df(data_path or info['csv'], verbose=verbose)
     pressure, wind, rainfall, discharge = load_meteo(meteo_dir, verbose=verbose, site=info['meteo_site'])
-    grids = build_meteo_grids(df, pressure, wind, rainfall, discharge, verbose=verbose)
+    grids = build_meteo_grids(df, pressure, wind, rainfall, discharge, river_lag_hours=lag, verbose=verbose)
+    print(f"river inputs: the value dated D is used from {lag}h after 00:00 on D"
+          f"{'  (LEGACY calendar-day mapping, leaks future river data)' if lag == 0 else ''}")
 
     coef = fit_utide(df, end=TRAIN_END, lat=info['lat'], stride=stride, verbose=verbose)
     utide_index = pd.date_range(df['DateTime'].min(),
