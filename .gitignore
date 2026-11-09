@@ -41,3 +41,6 @@ venv/
 # --- credentials (cdsapi/CDS token; never commit these) ---
 .cdsapirc
 *.env
+
+CLAUDE.md
+claude-code-prompts.md
