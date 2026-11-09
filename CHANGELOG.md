@@ -17,7 +17,7 @@ Paper work needs every development decision made on validation. Until now `model
 - `run_gauge.py --pipeline dense`: `plot_dense` runs only with `--score-test` (its figures are test results). Validation and test runs keep separate state files (`run_state_val.json`, `run_state_test.json`), so the legacy `run_state.json` is left alone. `--score-test` is rejected for other pipelines.
 - `plot_dense.py` reads the variant's directory and adds `_<variant>` to its figure names.
 - `config.NUM_THREADS` (physical cores via psutil, 8 here; override `TIDAL_NUM_THREADS`) is applied by `describe_device()`, so every training script sets `torch.set_num_threads` explicitly.
-- Not changed: `train_stage1/2/3.py` still score test. They are dissertation-era scripts and are not re-run.
+- Not changed, by decision: the dissertation-era `train_stage1/2/3.py` score test by default and are frozen. If any of them is retrained later (for example stage 3 at Richmond), the validation-scoring change is applied to that script first.
 
 ### Verification
 - Guards: `TIDAL_SCORE_TEST=1` on the legacy variant exits before loading data; `--score-test` with `--pipeline baselines` is rejected; an invalid variant name (`../dense`) is rejected.
