@@ -62,6 +62,26 @@ def from_env(name, default, cast=str):
     return None if raw.strip().lower() == 'none' else cast(raw)
 
 
+def _physical_cores():
+    """Physical core count (psutil), falling back to the logical count if psutil is missing."""
+    try:
+        import psutil
+        n = psutil.cpu_count(logical=False)
+    except ImportError:
+        n = None
+    return n or os.cpu_count() or 1
+
+
+# CPU threads for torch: physical cores (8 on the Core Ultra 7 258V). Override with
+# TIDAL_NUM_THREADS. Applied by describe_device(), which every training script calls first.
+NUM_THREADS = from_env('TIDAL_NUM_THREADS', _physical_cores(), int)
+
+
+def configure_threads(n=None):
+    torch.set_num_threads(NUM_THREADS if n is None else n)
+    return torch.get_num_threads()
+
+
 def gauge_info(gauge):
     if gauge not in GAUGES:
         raise ValueError(f"unknown gauge {gauge!r}; choose one of {list(GAUGES)}")
@@ -76,6 +96,7 @@ def get_device():
 def describe_device(device=None):
     device = get_device() if device is None else device
     print(f"PyTorch version: {torch.__version__}")
+    print(f"CPU threads:     {configure_threads()}")
     print(f"CUDA available:  {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"GPU:             {torch.cuda.get_device_name(0)}")
