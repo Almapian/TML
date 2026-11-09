@@ -5,6 +5,55 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10: decisions after the diagnostics; overnight queue plan and pre-registered selection rule
+
+### Disclosure: future leak in the stage 3 discharge and rainfall inputs (dissertation results affected)
+- **What.** In every stage 3 meteo-fusion model trained before 2026-11-09, an anchor on calendar day D used the NRFA daily values dated D. NRFA gauged daily flow is the mean over the 09:00 to 09:00 GMT water day, dated by its start, so the value dated D includes flow up to 09:00 on D+1. The model therefore saw up to 33h of future Kingston discharge. Catchment rainfall used the same mapping; its day convention is unconfirmed but likely the same.
+- **Which dissertation results.** Only the stage 3 **meteo-fusion** model (`TidalSeq2SeqMulti`, with the river branch), at **both Southend Pier and Richmond Lock**:
+  - its RMSE tables and figures;
+  - its SHAP branch attributions (`plot_stage3.py`);
+  - the Southend learning-rate search that chose its hyperparameters, which Richmond then reused.
+- **Not affected.** Every model without river inputs: stage 1, stage 2, stage 3 tide-only, the stage 3 reduced-training ablation (tide-only), the dense models and the classical baselines.
+- **Direction.** The leak gave the model future information, so it **flattered** the affected results rather than hurting them.
+  - Evidence (Richmond, validation): feeding the existing model leak-free river inputs raises its RMSE by 0.003 m at 10 min and 0.011 m at 72h. Source: `outputs/diagnostics_2026-11/B_ablation_val_rmse.csv`.
+  - That is an indicative size only: a model trained with the leak and scored without it is also seeing a shift in its inputs.
+  - Southend was not measured.
+  - The leak does **not** explain the poor Richmond stage 3 short-lead accuracy, which is an epoch-1 checkpoint (see the diagnostics entry below).
+- **Fix.** Commit `46b998b`: river values are used only after their water day has ended (`config.RIVER_AVAILABILITY_LAG_HOURS = 33`, the default). `config.LEGACY_RIVER_LAG_HOURS = 0` is kept **only** to reproduce dissertation numbers. Nothing has been re-scored or retrained with it.
+
+### Decisions (Al, 2026-11-10)
+1. **Richmond stage 3 retrain: deferred, not tonight.** A follow-up needs (a) the validation-scoring change in `train_stage3.py` first and (b) a Richmond-specific hyperparameter search instead of Southend's winners.
+2. **New variant `dense_v2_pad`.** Dense stage 2 with the decoder extended past 72h by **3 hourly steps (73h, 74h, 75h)**, fed UTide at those times. The extra steps are excluded from the loss and from scoring. No skip connection. Trained from scratch, flag-controlled, default off.
+   - Why 3 steps:
+     - It is the convention dense stage 3 already uses (`DENSE_PAD_STEPS = 3`, hourly spacing), so the stage 2 and stage 3 decoders end the same way.
+     - The evidence suggests it is enough to remove most of the edge effect. From 71h to 72h on validation, padded dense stage 3 rises 0.0018 m (Southend) and 0.0005 m (Richmond), against 0.0038 m and 0.0020 m for unpadded dense stage 2 (`outputs/[richmond/]dense/dense_val_metrics.csv`).
+     - 3h is a quarter of an M2 cycle of known-future tide for the backward LSTM pass at 72h.
+     - The decoder grows from 73 to 76 steps, about 4% more compute.
+   - The padding UTide must come from the extended reconstruction, not from gauge rows, so the anchor set stays identical to the legacy model's.
+3. **NRFA alignment.** The legacy mapping stays as an option for reproducing dissertation numbers only; no re-scoring now (recorded above).
+4. **Long-memory variant: low priority**, because dense and AR are level over 24 to 71h. It is the last optional queue item.
+
+### Overnight queue order (Prompt 3)
+1. dense_v2_skip, Southend
+2. dense_v2_skip, Richmond
+3. dense_v2_pad, Southend
+4. dense_v2_pad, Richmond
+
+Steps 1 to 4: all trained from scratch, validation scoring only.
+
+5. Select the winner per gauge by the rule below; test-score only the winner.
+6. Baseline re-evaluation against the winner (with the joint tests).
+7. Interpolation and high-water post-processing for the winner.
+8. Optional if time: dense_v2_skip_wloss Southend, then dense_v2_skip_longmem Southend (validation only).
+9. Always: report, commit, push, PR comment.
+
+Combining skip and pad is not queued until both have been seen individually.
+
+### Pre-registered selection rule (written 2026-11-10, before any dense_v2 variant has been trained or scored)
+- **Candidates:** `dense_v2_skip` and `dense_v2_pad`, separately per gauge (Southend Pier, Richmond Lock).
+- **Metric:** the arithmetic mean, over all 73 dense leads (10min and 1h to 72h), of the validation RMSE (2018 to 2020) in `outputs/[richmond/]<variant>/dense_val_metrics.csv`, for model `Dense stage 2`. This is per-lead RMSE over every validation anchor, with flagged targets masked, by `training.masked_rmse_mae`.
+- **Winner:** the candidate with the lower metric. Only the winner is scored on test (`--score-test`); the loser's test numbers are never computed.
+
 ## 2026-11-10: diagnostics A (bias decomposition) and B (stage 3 at Richmond); river leak fix
 
 ### Why
