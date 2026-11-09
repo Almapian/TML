@@ -5,6 +5,35 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10: diagnostics A (bias decomposition) and B (stage 3 at Richmond); river leak fix
+
+### Why
+PR item (a): test whether the AR residual baseline's 72h advantage at Southend comes from a slowly varying mean offset. PR item (b): find out why Richmond stage 3 (meteo fusion) is about 3.5x worse than its tide-only ablation at 10 min.
+
+### What ran (no training)
+- `models/diag_bias_decomposition.py`: harmonic baseline bias/std/RMSE per split and calendar year; dense stage 2 vs AR residual per lead.
+  - Inputs: saved dense predictions and AR test predictions.
+  - AR validation predictions were regenerated from the frozen `best_configs.json` through `eval_baselines`' code path (deterministic Yule-Walker on train, no search). They reproduce the saved test predictions to 2.4e-7 m.
+- `models/diag_stage3_richmond.py`: the existing Richmond stage 3 checkpoints were loaded and scored on validation, with each input replaced by its training mean, plus an input audit and a sanity plot. The checkpoints' validation MSE reproduces the training history (0.08981 meteo fusion, 0.07639 tide-only).
+- Outputs: `outputs/diagnostics_2026-11/`. Report and figures: `reports/2026-11-nov-fixes/01_diagnostics.md`.
+
+### Findings
+- Southend 72h gap, dense stage 2 minus AR: 0.0053 m (validation) and 0.0125 m (test).
+  - A constant bias explains 15% / 22% of it; a calendar-month offset explains 55% / 33%.
+  - Most of the rest is a dense stage 2 last-lead artefact: test RMSE 0.2300 / 0.2327 / 0.2378 m at 70 / 71 / 72h, with the bias jumping at 72h. Over 24 to 71h the two models differ by 0.0004 m (validation) and 0.0027 m (test).
+- The harmonic residual at Southend drifts: annual mean +0.045 to +0.070 m in 2022 to 2024, against ±0.025 m in training years. At Richmond it is dominated by river-driven swings of ±0.3 to 0.45 m with no trend.
+- Richmond stage 3: the most likely cause is overfitting plus early stopping at epoch 1 (validation loss best at epoch 1 of 11 while training loss halves). No covariate is broken: removing any input makes the model worse. Scalers are Richmond's own, the timezone lag is 0 min in every month, and validation has no missing covariates.
+
+### Code change: river leakage fix (commit `46b998b`)
+- NRFA daily values are 09:00 to 09:00 GMT water-day means dated by their start, but every anchor on day D used the value dated D. That is up to 33h of future river data.
+- New `config.RIVER_AVAILABILITY_LAG_HOURS = 33` (the default) and `LEGACY_RIVER_LAG_HOURS = 0`, which reproduces the old mapping for existing checkpoints. Test: `tests/test_stage3_windowing.py` (5/5); `tests/test_baselines.py` still passes 12/12.
+- Nothing retrained. Fed leak-free inputs, the existing Richmond meteo-fusion model loses 0.003 m (10 min) and 0.011 m (72h) on validation.
+- Frozen-script note: `train_stage3.py` / `plot_stage3.py` now default to the leak-free mapping. Re-scoring the existing stage 3 checkpoints exactly needs the legacy lag.
+- Dense stage 3 tide-only uses no river values. Only its valid-anchor mask moves, by about 1.4 days at the start of the record (training windows only).
+
+### Test disclosure
+Diagnostic A computed and displayed **test** RMSE, bias and std for the harmonic baseline, dense stage 2 and the AR residual baseline, at the user's request. All three models' test results were already published. Diagnostic B used validation only; its timezone check uses the whole record but scores no model. No configuration was chosen using these test numbers.
+
 ## 2026-11-09: legacy dense models scored on validation (comparison baseline)
 
 ### Why
