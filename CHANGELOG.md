@@ -5,6 +5,25 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-09: legacy dense models scored on validation (comparison baseline)
+
+### Why
+New dense variants are developed on validation, so the existing dense models need validation numbers to compare against.
+
+### Run
+- `python models/run_gauge.py --pipeline dense --gauge richmond --gauge southend` (validation only), 2.7 min (Richmond) and 2.8 min (Southend). Console log: `logs/dense_legacy_val_scoring_console.log`.
+- Inference only: every checkpoint was loaded and left as-is, and no training ran.
+- New files only: `outputs/[richmond/]dense/dense_val_{metrics.csv,vs_sparse_matched.csv,predictions_stage2.npz,predictions_stage3_tideonly.npz}`, plus `logs/<gauge>/dense/run_state_val.json`; `train_dense.log` was appended to. 124 pre-existing legacy files had identical SHA-256 hashes before and after.
+
+### Check
+The mean squared validation RMSE over the 73 leads (scaled units) equals each model's best validation loss in `dense_history.json`, to 5 decimal places: Richmond 0.03367 (stage 2) and 0.03389 (stage 3 tide-only); Southend 0.01807 and 0.01808.
+
+### Results
+Table and discussion: `reports/2026-11-09-dense-legacy-validation/README.md`. Dense stage 2 validation RMSE at 10min: Richmond 0.0880 m, Southend 0.0458 m.
+
+### Test disclosure
+The report shows the **published** test numbers (`dense_metrics.csv`, 2026-10-29) next to the new validation ones, at the user's request. No new test scoring was done.
+
 ## 2026-11-09: validation-only scoring, dense variants, explicit CPU threads (branch `paper/nov-fixes`)
 
 ### Why
