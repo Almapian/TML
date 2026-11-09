@@ -27,14 +27,14 @@ The models are **direct** multi-horizon predictors, not recursive. Model classes
 
 - Splits are chronological: **train before 2018, validation 2018 to 2020, test 2021 onwards** (`TRAIN_END = '2018-01-01'`, `VAL_END = '2021-01-01'` in config; `split_chronological` in `utils/models/datasets.py`). Data runs 2004 to 2024.
 - UTide is fitted on **train only**. Never refit on validation or test.
-- **Make all development decisions on validation.** Look at test only when producing final numbers for a finished configuration. If you see test numbers during development, record it in the CHANGELOG. Note: `models/train_dense.py` currently computes and prints **test** metrics at the end of every run, and writes no validation metrics table.
+- **Make all development decisions on validation.** Look at test only when producing final numbers for a finished configuration. If you see test numbers during development, record it in the CHANGELOG. `models/train_dense.py` scores **validation only** by default (`dense_val_*.csv`). Test is scored only with `--score-test` (env `TIDAL_SCORE_TEST=1`), which is reserved for the final scoring of a finished variant. `baselines_eval` is the baselines' test step. The stage 1 to 3 training scripts still score test, but they are historical and are not re-run.
 - Patched or flagged values are masked out of scoring. `is_flagged` = chatter | stuck | imputed (`load_gauge_df`). Use `masked_rmse_mae` (scoring) and `masked_mse` (loss) in `utils/models/training.py` rather than writing new scoring.
 - "RMSE at a given lead" means the average over every anchor in the period, not a single forecast.
 - No leakage: every input must be computable from data at or before the anchor time. Future UTide at target times is allowed because it is a deterministic astronomical prediction. Future weather is not allowed.
 
 ## Branches and git
 
-- `master` (there is no `main`): the code as of dissertation submission, tagged `dissertation-submitted` (4428b54). Do not commit to it directly.
+- `master` (the default branch): the code as of dissertation submission, tagged `dissertation-submitted` (4428b54). Do not commit to it directly.
 - `dense-predictor`: dense model plus the classical baselines (commit `ba70745`, tagged `baselines-audit-2026-11`, holds the baselines audit).
 - Work branches come off `dense-predictor` and are named `paper/<topic>`, for example `paper/nov-fixes`. Open a **draft PR into `dense-predictor`**, not into master.
 - The remote is SSH (`git@github.com:Almapian/TML.git`) via Windows OpenSSH (`core.sshCommand`), with the key held by the Windows `ssh-agent` service, so pushes need no prompt.
@@ -46,7 +46,7 @@ The models are **direct** multi-horizon predictors, not recursive. Model classes
 ## Experiment discipline
 
 - **Make one architectural change per experiment**, so results can be attributed. If two changes are needed, train them as separate variants.
-- **Never overwrite existing outputs or checkpoints.** Each new variant gets its own directory, following the existing per-gauge layout (Southend has no gauge folder, other gauges do): for example `outputs/[richmond/]dense_v2_skip/` and `models/checkpoints/[richmond/]dense_v2_skip/`, next to the current `dense/`. The old results are the comparison. Note that `train_dense.py` loads an existing checkpoint instead of retraining (`LOAD_FROM_CHECKPOINT = True`), so a variant that reuses the `dense/` paths silently gets the old weights.
+- **Never overwrite existing outputs or checkpoints.** Each new variant gets its own directory, following the existing per-gauge layout (Southend has no gauge folder, other gauges do): for example `outputs/[richmond/]dense_v2_skip/` and `models/checkpoints/[richmond/]dense_v2_skip/`, next to the current `dense/`. Pick it with `run_gauge.py --variant <name>` (env `TIDAL_DENSE_VARIANT`); logs go to `logs/<gauge>/<variant>/`. A variant trains from scratch and only ever loads or resumes from its own directories. The legacy `dense` variant is the comparison baseline: it is score-only, `train_dense.py` refuses to retrain it, and `--score-test` is refused for it so its published test tables stay as they are. Do not delete, move or retrain the old models.
 - Every experiment gets a `CHANGELOG.md` entry (date, what, why, where the outputs are, and whether test was looked at).
 - Keep configs in `utils/models/config.py`; do not hard-code them in scripts.
 
@@ -59,7 +59,7 @@ Al's machine is an ASUS Zenbook 14 with an Intel Core Ultra 7 258V (Lunar Lake, 
 - **Never materialise all training windows in memory.** Index windows lazily in the `Dataset`. Before any long run, estimate peak RAM from a short run (use `psutil`) and stop if the projection exceeds about 24 GB. **Current state:** there is no `Dataset` class. `utils/models/windowing.py` and `datasets.py` build every window of every split up front as NumPy arrays, then copy them to tensors; `training.batch_iter` indexes those tensors. This is fine at the 16h lookback (dataset prep peaked at 6.7 GB) but memory grows linearly with lookback, so any longer-input variant needs lazy windowing first.
 - Run **one training job at a time.**
 - Long jobs must be **detached from the Claude Code session**, logged to a file, checkpointed every epoch and resumable. They should keep the machine awake while running (on Windows, `SetThreadExecutionState` via `ctypes`). Overnight runs are fine; crashes are not. `models/run_gauge.py` already does the logging, retries, keep-awake and resume (per-epoch state in `outputs/_resume/`).
-- Set `torch.set_num_threads` explicitly to the number of physical cores (8). No script does this yet; torch's default is also 8 here.
+- Set `torch.set_num_threads` explicitly to the number of physical cores (8). This is `config.NUM_THREADS` (override with `TIDAL_NUM_THREADS`), applied by `config.describe_device()`, which every training script calls.
 
 ## Writing conventions (reports, docs, commit messages)
 
@@ -70,8 +70,8 @@ Al's machine is an ASUS Zenbook 14 with an Intel Core Ultra 7 258V (Lunar Lake, 
 
 ## Useful paths
 
-- `models/run_gauge.py`: pipeline entry point. `--pipeline {main,dense,baselines,baselines_eval}`, repeatable `--gauge`, `--redo`. Default gauge is `richmond` here, but `southend` when a train script is run directly.
-  - Dense run: `python models/run_gauge.py --pipeline dense --gauge richmond --gauge southend`. Logs and state are in `logs/<gauge>/dense/`.
+- `models/run_gauge.py`: pipeline entry point. `--pipeline {main,dense,baselines,baselines_eval}`, repeatable `--gauge`, `--redo`, and for dense `--variant` and `--score-test`. Default gauge is `richmond` here, but `southend` when a train script is run directly.
+  - Dense variant (validation): `python models/run_gauge.py --pipeline dense --variant dense_v2_skip --gauge richmond --gauge southend`. Final test scoring: add `--score-test`.
 - `utils/models/config.py`: all configuration
 - `utils/models/datasets.py`, `utils/models/windowing.py`: loading, splitting, UTide fit, windowing, scaling
 - `utils/models/training.py`: training loop, masked loss and RMSE, checkpoints and resume
