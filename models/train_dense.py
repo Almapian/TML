@@ -68,14 +68,28 @@ SHARED_LEADS = ['10min', '1h', '6h', '24h', '48h', '72h']   # on both the sparse
 EXAMPLE_ISSUE = pd.Timestamp('2022-02-17 12:00')            # Storm Eunice surge build-up
 EXAMPLE_WINDOW = ('2022-02-01', '2022-03-01')                # fall back to the nearest anchor in it
 
+# A variant only ever loads (a finished model) or resumes (an interrupted one) from its
+# OWN checkpoint directory, so a new variant always trains from scratch. The legacy
+# variant is score-only: its checkpoints must exist and it is never retrained.
+VARIANT = C.dense_variant()
+LEGACY = VARIANT == C.DENSE_LEGACY_VARIANT
 LOAD_FROM_CHECKPOINT = True
 
 suffix = '_smoke' if SMOKE else ''
-OUTPUT_DIR = paths.ensure_dir(str(paths.dense_output_dir(GAUGE)) + suffix)
-CHECKPOINT_DIR = paths.ensure_dir(str(paths.dense_checkpoint_dir(GAUGE)) + suffix)
+OUTPUT_DIR = paths.ensure_dir(str(paths.dense_output_dir(GAUGE, VARIANT)) + suffix)
+CHECKPOINT_DIR = paths.ensure_dir(str(paths.dense_checkpoint_dir(GAUGE, VARIANT)) + suffix)
 SPARSE_CKPT_DIR = paths.checkpoint_dir(GAUGE)
 
 print(f"gauge: {C.gauge_info(GAUGE)['label']}{'   [SMOKE RUN]' if SMOKE else ''}")
+print(f"variant: {VARIANT}{'  (legacy: score only, never retrained)' if LEGACY else ''}\n"
+      f"  outputs:     {OUTPUT_DIR}\n  checkpoints: {CHECKPOINT_DIR}")
+
+
+def require_legacy_checkpoint(path):
+    """The legacy model is the comparison baseline: refuse to (re)train it."""
+    if LEGACY and not path.exists():
+        raise FileNotFoundError(f"legacy dense checkpoint {path} is missing; the legacy model is score-only "
+                                f"and is never retrained. Pass a new --variant to train.")
 print(f"dense lead times: {len(DENSE_NAMES)} ({DENSE_NAMES[0]}, {DENSE_NAMES[1]}, ... {DENSE_NAMES[-1]}); "
       f"stage-3 decoder: {len(S3_DEC_STEPS)} points, tail days: {TAIL_DAYS or 'none'}")
 DEVICE = C.describe_device()
@@ -131,6 +145,7 @@ print(f"dense stage-2 tensors: X {tuple(data.train_tensors['X'].shape)}, "
 scaler = (data.train_mean, data.train_std)
 
 ckpt_s2 = CHECKPOINT_DIR / 'stage2_dense_seq2seq.pt'
+require_legacy_checkpoint(ckpt_s2)
 C.set_seed()
 s2 = TidalSeq2Seq().to(DEVICE)
 print(f"TidalSeq2Seq parameters: {sum(p.numel() for p in s2.parameters()):,} (same class as sparse stage 2)")
@@ -142,7 +157,7 @@ s2, histories['Dense stage 2'] = training.load_or_train(
     label='dense-stage2', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 training.save_checkpoint({
     'model_state_dict': s2.state_dict(),
-    'config': {'model': 'TidalSeq2Seq', 'horizons': DENSE_HORIZONS, 'lookback': LOOKBACK,
+    'config': {'model': 'TidalSeq2Seq', 'variant': VARIANT, 'horizons': DENSE_HORIZONS, 'lookback': LOOKBACK,
                'lr': S2_LR, 'batch_size': S2_BATCH, 'weight_decay': 0.0},
     'scaler': {'mean': data.train_mean, 'std': data.train_std},
 }, ckpt_s2, LOAD_FROM_CHECKPOINT)
@@ -191,6 +206,7 @@ weights = C.dense_horizon_weights(len(DENSE_HORIZONS), len(TAIL_DAYS))
 weights = None if weights is None else weights.to(DEVICE)
 
 ckpt_s3 = CHECKPOINT_DIR / 'stage3_dense_tideonly.pt'
+require_legacy_checkpoint(ckpt_s3)
 C.set_seed()
 s3 = TidalSeq2SeqTideOnly(len(S3_DEC_STEPS), S3_TARGET_SLICE).to(DEVICE)
 print(f"TidalSeq2SeqTideOnly parameters: {sum(p.numel() for p in s3.parameters()):,} (same class as sparse stage 3)")
@@ -204,7 +220,7 @@ s3, histories['Dense stage 3 (tide-only)'] = training.load_or_train(
     label='dense-stage3-tideonly', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 training.save_checkpoint({
     'model_state_dict': s3.state_dict(),
-    'config': {'model': 'TidalSeq2SeqTideOnly', 'horizons': S3_HORIZONS, 'decoder_seq_steps': S3_DEC_STEPS,
+    'config': {'model': 'TidalSeq2SeqTideOnly', 'variant': VARIANT, 'horizons': S3_HORIZONS, 'decoder_seq_steps': S3_DEC_STEPS,
                'target_slice_in_decoder': [S3_TARGET_SLICE.start, S3_TARGET_SLICE.stop],
                'tail_days': TAIL_DAYS, 'tail_loss_share': C.DENSE_TAIL_LOSS_SHARE if TAIL_DAYS else None,
                'lookback': LOOKBACK, 'lr': S3_LR, 'weight_decay': S3_WD, 'batch_size': S3_BATCH},

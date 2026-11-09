@@ -1,6 +1,9 @@
 """Figures for the dense (continuous 0-72h) pipeline. Reads tables only -- no training.
 
-    python models/plot_dense.py      # after models/train_dense.py, for the same GAUGE
+    python models/plot_dense.py      # after models/train_dense.py, for the same GAUGE and variant
+
+A variant other than the legacy 'dense' reads its own output directory and adds _<variant>
+to the figure names, so the original figures are never overwritten.
 
 Two figures per gauge, as 300-dpi PNG in report_images/ (suffix _<gauge> for non-Southend):
 
@@ -41,9 +44,11 @@ GAUGE = C.from_env('TIDAL_GAUGE', 'southend')
 SMOKE = C.from_env('TIDAL_SMOKE', '0').strip().lower() not in ('', '0', 'false')
 LEADS = list(C.STAGE1_ROLLOUT_HORIZONS)            # 10min, 1h, 6h, 24h, 48h
 
-DENSE_DIR = pathlib.Path(str(paths.dense_output_dir(GAUGE)) + ('_smoke' if SMOKE else ''))
+VARIANT = C.dense_variant()
+DENSE_DIR = pathlib.Path(str(paths.dense_output_dir(GAUGE, VARIANT)) + ('_smoke' if SMOKE else ''))
 set_report_dir(str(DENSE_DIR if SMOKE else paths.ensure_dir(paths.REPORT_IMAGES_DIR)))
-set_name_suffix(figure_suffix(GAUGE))
+set_name_suffix('_'.join(p for p in (figure_suffix(GAUGE),
+                                     None if VARIANT == C.DENSE_LEGACY_VARIANT else VARIANT) if p))
 LABEL = C.gauge_info(GAUGE)['label']
 
 FAMILY = {'UTide': '#52514e', 'stage1': '#2a78d6', 'stage2': '#eb6834', 'stage3': '#1baf7a'}

@@ -165,6 +165,24 @@ DENSE_TAIL_DAYS = []
 DENSE_TAIL_LOSS_SHARE = 0.5
 DENSE_PAD_STEPS = 3          # decoder points after the last target, as stage 3 pads past 30d
 
+# Dense variants. Each one is a directory name under outputs/[<gauge>/] and
+# models/checkpoints/[<gauge>/], picked with run_gauge.py --variant (env TIDAL_DENSE_VARIANT).
+# A variant trains from scratch and only ever resumes from its own directories. The
+# original model, DENSE_LEGACY_VARIANT, is the comparison baseline: it is never retrained,
+# only loaded from its existing checkpoints and scored.
+DENSE_LEGACY_VARIANT = 'dense'
+DENSE_VARIANT = DENSE_LEGACY_VARIANT
+DENSE_VARIANT_PATTERN = r'dense(_[a-z0-9]+)*'
+
+
+def dense_variant(name=None):
+    """Validate a dense variant name (default: env TIDAL_DENSE_VARIANT, else DENSE_VARIANT)."""
+    import re
+    name = from_env('TIDAL_DENSE_VARIANT', DENSE_VARIANT) if name is None else name
+    if not re.fullmatch(DENSE_VARIANT_PATTERN, name):
+        raise ValueError(f"dense variant {name!r} must match {DENSE_VARIANT_PATTERN!r}, e.g. 'dense_v2_skip'")
+    return name
+
 
 def dense_stage3_decoder(tail_days=None):
     """(horizons, decoder_seq_steps, target_slice) for the dense stage-3 decoder: a leading

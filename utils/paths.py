@@ -58,14 +58,16 @@ def checkpoint_dir(gauge="southend"):
     return CHECKPOINTS_DIR if gauge == "southend" else CHECKPOINTS_DIR / gauge
 
 
-def dense_output_dir(gauge="southend"):
-    """Tables of the dense (continuous 0-72h) pipeline, apart from the main stages'."""
-    return (OUTPUTS_DIR if gauge == "southend" else OUTPUTS_DIR / gauge) / "dense"
+def dense_output_dir(gauge="southend", variant="dense"):
+    """Tables of the dense (continuous 0-72h) pipeline, apart from the main stages'.
+    `variant` is the directory name: 'dense' is the original model, new variants get
+    their own (e.g. 'dense_v2_skip'), so no variant ever overwrites another's results."""
+    return (OUTPUTS_DIR if gauge == "southend" else OUTPUTS_DIR / gauge) / variant
 
 
-def dense_checkpoint_dir(gauge="southend"):
+def dense_checkpoint_dir(gauge="southend", variant="dense"):
     """Weights of the dense pipeline, so they never collide with the main checkpoints."""
-    return checkpoint_dir(gauge) / "dense"
+    return checkpoint_dir(gauge) / variant
 
 
 def baseline_output_dir(gauge="southend"):
