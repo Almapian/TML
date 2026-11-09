@@ -180,13 +180,17 @@ DENSE_VARIANT_PATTERN = r'dense(_[a-z0-9]+)*'
 # (train_stage3 only decides whether the unchanged stage 3 tide-only model is retrained).
 #   residual_skip      stage 2 output = residual persistence + network correction
 #   decoder_pad_steps  extra hourly UTide steps after 72h, excluded from loss and scoring
+#   persistence_loss_weights  each lead's squared error divided by that lead's
+#                      residual-persistence MSE on the training set (normalised to mean 1)
 #   train_stage3       also (re)train the dense stage 3 tide-only model. The v2 variants only
 #                      change stage 2, so retraining stage 3 would just repeat the legacy model.
-DENSE_VARIANT_DEFAULTS = {'residual_skip': False, 'decoder_pad_steps': 0, 'train_stage3': True}
+DENSE_VARIANT_DEFAULTS = {'residual_skip': False, 'decoder_pad_steps': 0,
+                          'persistence_loss_weights': False, 'train_stage3': True}
 DENSE_VARIANTS = {
     'dense': {},
     'dense_v2_skip': {'residual_skip': True, 'train_stage3': False},
     'dense_v2_pad': {'decoder_pad_steps': 3, 'train_stage3': False},
+    'dense_v2_skip_wloss': {'residual_skip': True, 'persistence_loss_weights': True, 'train_stage3': False},
 }
 
 

@@ -90,7 +90,7 @@ EXAMPLE_WINDOW = ('2022-02-01', '2022-03-01')                # fall back to the 
 VARIANT = C.dense_variant()
 LEGACY = VARIANT == C.DENSE_LEGACY_VARIANT
 FLAGS = C.dense_variant_flags(VARIANT)
-SKIP, PAD = FLAGS['residual_skip'], FLAGS['decoder_pad_steps']
+SKIP, PAD, WLOSS = FLAGS['residual_skip'], FLAGS['decoder_pad_steps'], FLAGS['persistence_loss_weights']
 LOAD_FROM_CHECKPOINT = True
 
 if SANITY_EPOCHS and (LEGACY or SCORE_TEST):
@@ -204,11 +204,24 @@ C.set_seed()
 s2 = TidalSeq2Seq(residual_skip=SKIP, n_out=len(DENSE_NAMES) if PAD else None).to(DEVICE)
 print(f"TidalSeq2Seq parameters: {sum(p.numel() for p in s2.parameters()):,} (same class as sparse stage 2)")
 
+s2_weights = None
+if WLOSS:
+    # per-lead residual-persistence MSE on the TRAINING windows (scaled units), computed once
+    tt = data.train_tensors
+    base = tt['Ydec'][:, :len(DENSE_NAMES)] + (tt['X'][:, -1] - tt['Ua']).unsqueeze(-1)
+    ok = ~tt['Flag']
+    pers_mse = (((base - tt['Y']) ** 2) * ok).sum(0) / ok.sum(0)
+    s2_weights = 1.0 / pers_mse
+    s2_weights = (s2_weights / s2_weights.mean()).to(DEVICE)
+    print(f"persistence loss weights (mean 1): 10min {s2_weights[0]:.2f}, 1h {s2_weights[1]:.2f}, "
+          f"24h {s2_weights[24]:.3f}, 72h {s2_weights[-1]:.3f}")
+
 t_train = time.time()
 s2, histories['Dense stage 2'] = training.load_or_train(
     s2, ckpt_s2,
     lambda m: training.train_model(m, predict_dense2, maybe_subset(data.train_tensors), maybe_subset(data.val_tensors),
                                    epochs=EPOCHS, batch_size=S2_BATCH, lr=S2_LR, patience=PATIENCE,
+                                   horizon_weights=s2_weights,
                                    label='dense-stage2', device=DEVICE, resume_path=training.partial_path(ckpt_s2)),
     label='dense-stage2', load_from_checkpoint=LOAD_FROM_CHECKPOINT, device=DEVICE)
 training.save_checkpoint({
