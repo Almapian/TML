@@ -5,6 +5,26 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-09: validation-only scoring, dense variants, explicit CPU threads (branch `paper/nov-fixes`)
+
+### Why
+Paper work needs every development decision made on validation. Until now `models/train_dense.py` scored only the test set, at the end of every run, so any new variant would have shown test numbers during development. New variants also need to train from scratch without touching the original dense model, which is the comparison baseline.
+
+### Code
+- `models/train_dense.py` scores **validation (2018 to 2020) by default** and writes `dense_val_metrics.csv`, `dense_val_vs_sparse_matched.csv` and `dense_val_predictions_*.npz`. Validation windows are rebuilt raw from the same split that `prepare_stage2` / `prepare_stage3` use. The matched sparse comparison is also on validation; the sparse models are only loaded for scoring, never as initial weights.
+- Test is scored only with `--score-test` (env `TIDAL_SCORE_TEST=1`). That writes the original test files (`dense_metrics.csv`, `dense_vs_sparse_matched.csv`, `dense_test_predictions_*.npz`, the Feb 2022 example), in the same format `plot_dense.py` and `eval_baselines.py` read. It is reserved for the final scoring of a finished variant (queue step 3, `dense_v2_skip`).
+- Dense variants: `run_gauge.py --variant <name>` (env `TIDAL_DENSE_VARIANT`) writes to `outputs/[<gauge>/]<name>/`, `models/checkpoints/[<gauge>/]<name>/` and `logs/<gauge>/<name>/`, and resumes only from its own `outputs/_resume/` path. The legacy `dense` variant is the default and is score-only: `train_dense.py` refuses to train it if a checkpoint is missing, and refuses `--score-test` for it, so its published test tables are never rewritten.
+- `run_gauge.py --pipeline dense`: `plot_dense` runs only with `--score-test` (its figures are test results). Validation and test runs keep separate state files (`run_state_val.json`, `run_state_test.json`), so the legacy `run_state.json` is left alone. `--score-test` is rejected for other pipelines.
+- `plot_dense.py` reads the variant's directory and adds `_<variant>` to its figure names.
+- `config.NUM_THREADS` (physical cores via psutil, 8 here; override `TIDAL_NUM_THREADS`) is applied by `describe_device()`, so every training script sets `torch.set_num_threads` explicitly.
+- Not changed: `train_stage1/2/3.py` still score test. They are dissertation-era scripts and are not re-run.
+
+### Verification
+- Guards: `TIDAL_SCORE_TEST=1` on the legacy variant exits before loading data; `--score-test` with `--pipeline baselines` is rejected; an invalid variant name (`../dense`) is rejected.
+- Smoke run, Richmond: `TIDAL_SMOKE=1 python models/run_gauge.py --pipeline dense --variant dense_smoketest --score-test --gauge richmond`, exit 0 in about 5 min. Both models trained 1 epoch from scratch into the variant's own checkpoint dir. Validation and test files were all written, and the figures went to the variant dir with the variant suffix. Validation anchors: 156,079 dense; matched with sparse 154,351 (stage 2) and 144,415 (stage 3). `CPU threads: 8` was printed.
+- Legacy files (`outputs/[richmond/]dense/`, `models/checkpoints/[richmond/]dense/`, `report_images/`) had unchanged modification times afterwards. The smoke directories were then deleted.
+- **Test disclosure:** the smoke run computed test metrics for the 1-epoch smoke models, to exercise the `--score-test` path. They were not printed to the session or read, and the files were deleted. No decision used them.
+
 ## 2026-10-30: classical baselines (ARIMA, GP, dynamic harmonic, ridge)
 
 ### Why
