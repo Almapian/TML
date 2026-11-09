@@ -196,7 +196,7 @@ class Stage2Data:
     test_df: pd.DataFrame
     coef: object
     X_test: np.ndarray
-    Ydec_test: np.ndarray
+    Ydec_test: np.ndarray          # UTide at the target times (never padded): the UTide comparator
     Y_test: np.ndarray
     Flag_test: np.ndarray
     Time_test: np.ndarray
@@ -209,17 +209,33 @@ class Stage2Data:
     val_tensors_flat: dict
     test_tensors_flat: dict
     Ua_test: np.ndarray = None     # UTide at each test anchor (dense v2)
+    utide_full: np.ndarray = None  # regular-grid reconstruction for decoder padding (dense v2)
+    utide_start: np.datetime64 = None
+
+
+def pad_utide(time_matrix, horizon_steps, pad_steps, utide_full, utide_start):
+    """UTide at `pad_steps` extra decoder points after the last target, spaced like the last
+    two targets (hourly for the dense grid), taken from a gap-free reconstruction so the set
+    of anchors is exactly the unpadded one. Returns (N, pad_steps) float32."""
+    spacing = horizon_steps[-1] - horizon_steps[-2]
+    anchor = time_matrix[:, 0] - np.timedelta64(int(horizon_steps[0]) * 10, 'm')
+    idx = ((anchor - utide_start) / np.timedelta64(10, 'm')).astype(np.int64)
+    offsets = horizon_steps[-1] + spacing * np.arange(1, pad_steps + 1)
+    assert idx.min() >= 0 and idx.max() + offsets.max() < len(utide_full), 'utide grid too short for padding'
+    return utide_full[idx[:, None] + offsets[None, :]].astype(np.float32), idx
 
 
 def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_STRIDE,
                    data_path=None, verbose=True, gauge='southend', utide_fit_stride=None,
-                   with_anchor_utide=False):
+                   with_anchor_utide=False, decoder_pad_steps=0):
     """Stage 2: UTide fit on train only, reconstructed across the full span and used both
     as the decoder input feature and as the standalone UTide comparator.
 
     `utide_fit_stride=None` uses the gauge's default from config.GAUGES.
-    Dense v2 option (off by default, which reproduces the original tensors exactly):
-      with_anchor_utide  add 'Ua' (UTide at the anchor, scaled) to every tensor dict."""
+    Dense v2 options (both off by default, which reproduces the original tensors exactly):
+      with_anchor_utide  add 'Ua' (UTide at the anchor, scaled) to every tensor dict
+      decoder_pad_steps  append that many UTide points after the last target to 'Ydec'
+                         (decoder input only; Ydec_test stays at the targets)."""
     info = gauge_info(gauge)
     stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
     df = load_gauge_df(data_path or info['csv'], verbose=verbose)
@@ -247,7 +263,21 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
         print(f"windows -> train: {X_train.shape} (stride {train_stride}), "
               f"val: {X_val.shape}, test: {X_test.shape}")
 
+    utide_full = utide_start = None
     Ydec_in = {'train': Ydec_train, 'val': Ydec_val, 'test': Ydec_test}
+    if decoder_pad_steps:
+        grid = pd.date_range(df['DateTime'].min(), df['DateTime'].max() + pd.Timedelta(days=2), freq='10min')
+        utide_full = reconstruct_utide(grid, coef)
+        utide_start = grid[0].to_numpy()
+        for name, T_, Yd_ in (('train', T_train, Ydec_train), ('val', T_val, Ydec_val), ('test', Time_test, Ydec_test)):
+            pad, idx = pad_utide(T_, horizon_steps, decoder_pad_steps, utide_full, utide_start)
+            # the gap-free grid must reproduce the per-row reconstruction at the real targets
+            check = utide_full[idx[:2000, None] + np.asarray(horizon_steps)[None, :]]
+            assert np.allclose(check, Yd_[:2000], atol=1e-5), f'{name}: padding grid misaligned with targets'
+            Ydec_in[name] = np.concatenate([Yd_, pad], axis=1)
+        if verbose:
+            print(f"decoder padding: {decoder_pad_steps} UTide steps after the last target "
+                  f"(decoder length {Ydec_in['train'].shape[1]})")
 
     train_mean = float(train_df['Observed_ODN'].mean())
     train_std = float(train_df['Observed_ODN'].std())
@@ -279,7 +309,7 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
                       train_mean, train_std,
                       train_tensors, val_tensors, test_tensors,
                       train_tensors_flat, val_tensors_flat, test_tensors_flat,
-                      Ua_test)
+                      Ua_test, utide_full, utide_start)
 
 
 def prepare_stage2_reduced(device, df, train_start, horizon_steps, lookback=LOOKBACK,

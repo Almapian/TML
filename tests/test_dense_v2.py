@@ -1,4 +1,4 @@
-"""Checks for the dense v2 variants (residual-persistence skip).
+"""Checks for the dense v2 variants (residual-persistence skip, decoder padding).
 
     python tests/test_dense_v2.py
 """
@@ -53,12 +53,12 @@ def test_default_model_unchanged():
     """Flags off: the output is the plain decoder readout, and legacy weights load."""
     x, u, ua = _inputs()
     torch.manual_seed(1); a = TidalSeq2Seq()
-    torch.manual_seed(1); b = TidalSeq2Seq(residual_skip=False)
+    torch.manual_seed(1); b = TidalSeq2Seq(residual_skip=False, n_out=None)
     assert torch.equal(a(x, u)[0], b(x, u, ua)[0])
     ckpt = REPO_ROOT / 'models' / 'checkpoints' / 'dense' / 'stage2_dense_seq2seq.pt'
     if ckpt.exists():
         sd = torch.load(ckpt, map_location='cpu', weights_only=False)['model_state_dict']
-        for flags in ({}, {'residual_skip': True}):
+        for flags in ({}, {'residual_skip': True}, {'n_out': H}):
             TidalSeq2Seq(**flags).load_state_dict(sd)      # no new parameters in any variant
 
 
@@ -70,6 +70,16 @@ def test_skip_uses_no_data_after_anchor():
     assert torch.equal(residual_persistence(x2, u, ua), base)
     x3 = x.clone(); x3[:, -1] += 1.0                      # change the anchor value itself
     assert torch.allclose(residual_persistence(x3, u, ua), base + 1.0, atol=1e-6)
+
+
+def test_padding_steps_are_dropped_from_outputs():
+    x, u, ua = _inputs(H + 3)
+    m = TidalSeq2Seq(n_out=H)
+    pred, w = m(x, u)
+    assert pred.shape == (N, H) and w.shape[1] == H
+    # the padded inputs do reach the first H outputs (the backward LSTM sees them)
+    u2 = u.clone(); u2[:, H:] += 3.0
+    assert not torch.allclose(m(x, u2)[0], pred)
 
 
 def _toy_df(n_days=8, gap_at=None):
@@ -91,6 +101,17 @@ def test_anchor_utide_is_at_the_anchor():
     assert np.array_equal(X[:, -1], df.set_index('DateTime').loc[anchor, 'Observed_ODN'].to_numpy())
     X0, _, _, _, T0 = windowing.build_windows_multi(df, L, STEPS)
     assert np.array_equal(X0, X) and np.array_equal(T0, T), 'return_anchor_utide changed the windows'
+
+
+def test_padding_from_regular_grid_keeps_anchors_and_values():
+    df = _toy_df(n_days=9)
+    _, Yd, _, _, T = windowing.build_windows_multi(df, L, STEPS)
+    grid_utide = (np.arange(len(df) + 300) * 1e-3).astype(np.float32)          # same marker, gap-free
+    pad, idx = datasets.pad_utide(T, STEPS, 3, grid_utide, df.DateTime.iloc[0].to_datetime64())
+    anchor_rows = idx
+    assert np.allclose(pad, (anchor_rows[:, None] + np.array([438, 444, 450])[None, :]) * 1e-3), \
+        'padding should be UTide at 73h, 74h, 75h after the anchor'
+    assert np.allclose(grid_utide[idx[:, None] + np.array(STEPS)[None, :]], Yd)
 
 
 if __name__ == '__main__':

@@ -90,7 +90,7 @@ EXAMPLE_WINDOW = ('2022-02-01', '2022-03-01')                # fall back to the 
 VARIANT = C.dense_variant()
 LEGACY = VARIANT == C.DENSE_LEGACY_VARIANT
 FLAGS = C.dense_variant_flags(VARIANT)
-SKIP = FLAGS['residual_skip']
+SKIP, PAD = FLAGS['residual_skip'], FLAGS['decoder_pad_steps']
 LOAD_FROM_CHECKPOINT = True
 
 if SANITY_EPOCHS and (LEGACY or SCORE_TEST):
@@ -192,7 +192,7 @@ def matched(split, label_dense, label_sparse, dense, sparse):
 # %% ======================== Stage 2, dense =================================
 t0 = time.time()
 data = datasets.prepare_stage2(DEVICE, DENSE_STEPS, lookback=LOOKBACK, train_stride=TRAIN_STRIDE, gauge=GAUGE,
-                               with_anchor_utide=True)
+                               with_anchor_utide=True, decoder_pad_steps=PAD)
 print(f"dense stage-2 tensors: X {tuple(data.train_tensors['X'].shape)}, "
       f"Ydec {tuple(data.train_tensors['Ydec'].shape)}, Y {tuple(data.train_tensors['Y'].shape)}")
 scaler = (data.train_mean, data.train_std)
@@ -201,7 +201,7 @@ sc = lambda a: (a - data.train_mean) / data.train_std
 ckpt_s2 = CHECKPOINT_DIR / 'stage2_dense_seq2seq.pt'
 require_legacy_checkpoint(ckpt_s2)
 C.set_seed()
-s2 = TidalSeq2Seq(residual_skip=SKIP).to(DEVICE)
+s2 = TidalSeq2Seq(residual_skip=SKIP, n_out=len(DENSE_NAMES) if PAD else None).to(DEVICE)
 print(f"TidalSeq2Seq parameters: {sum(p.numel() for p in s2.parameters()):,} (same class as sparse stage 2)")
 
 t_train = time.time()
@@ -215,7 +215,7 @@ training.save_checkpoint({
     'model_state_dict': s2.state_dict(),
     'config': {'model': 'TidalSeq2Seq', 'variant': VARIANT, 'flags': FLAGS, 'horizons': DENSE_HORIZONS,
                'lookback': LOOKBACK, 'lr': S2_LR, 'batch_size': S2_BATCH, 'weight_decay': 0.0,
-               'residual_skip': SKIP},
+               'residual_skip': SKIP, 'decoder_pad_steps': PAD, 'n_out': len(DENSE_NAMES) if PAD else None},
     'scaler': {'mean': data.train_mean, 'std': data.train_std},
 }, ckpt_s2, LOAD_FROM_CHECKPOINT)
 
@@ -235,7 +235,9 @@ for split in SPLITS:
         # validation windows rebuilt raw (unscaled) from the same split prepare_stage2 used
         X, Yd, Y, Flag, T, Ua = windowing.build_windows_multi(data.val_df, LOOKBACK, DENSE_STEPS,
                                                               return_anchor_utide=True)
-        tensors = {'X': datasets.to_tensor(sc(X), DEVICE), 'Ydec': datasets.to_tensor(sc(Yd), DEVICE)}
+        Yd_in = Yd if not PAD else np.concatenate(
+            [Yd, datasets.pad_utide(T, DENSE_STEPS, PAD, data.utide_full, data.utide_start)[0]], axis=1)
+        tensors = {'X': datasets.to_tensor(sc(X), DEVICE), 'Ydec': datasets.to_tensor(sc(Yd_in), DEVICE)}
         if SKIP:
             tensors['Ua'] = datasets.to_tensor(sc(Ua), DEVICE)
         split_df = data.val_df
