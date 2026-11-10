@@ -5,6 +5,24 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10 (evening): review of the overnight results, validation comparison with AR, supervisor summary
+
+### Late candidate at Richmond
+- `dense_v2_skip` Richmond was an optional step (11), so it finished after the Richmond selection (step 08) and the selection file lists it as missing.
+- Re-running the rule with it included (validation only, written to the scratchpad, not to `outputs/`): `dense_v2_skip` scores 0.5906; `dense_v2_skip_wloss` still wins with 0.5722. The winner and the test scoring are unchanged.
+
+### Validation comparison of every candidate with the AR residual baseline (`models/diag_val_vs_ar.py`)
+- What: all dense candidates and the AR residual baseline (frozen config, refit on train) scored on the same validation anchors, mask and targets. No training; validation only. Output: `outputs/diagnostics_2026-11/val_vs_ar_<gauge>.csv`.
+- Check: the dense RMSEs match each variant's `dense_val_metrics.csv` to 4 decimals.
+- Southend, mean RMSE over 73 leads minus AR's (mm): dense 0.3, pad 0.2, skip_wloss 2.3, skip_scaled 4.1, skip 4.2, skip_longmem 3.8. Over 24 to 72h: dense 0.5, pad 0.3, skip 2.6, skip_wloss 3.1, skip_longmem 3.1.
+- Richmond (mm): every candidate beats AR by 24 to 29 (dense -29.2, pad -29.0, skip_wloss -28.7, skip -26.3, skip_scaled -23.9).
+- Long memory closes 0.4 mm of plain skip's 4.2 mm Southend gap over 73 leads, and none over 24 to 72h. This does not support "the classical advantage is the slowly varying mean level" on validation. The Southend gap is much larger on test (6.6 mm for skip_wloss) than on validation (2.3 mm), when the residual drift is also larger (Diagnostic A), so the hypothesis is not ruled out for the test years.
+
+### Supervisor summary
+- `reports/2026-11-nov-fixes/03_supervisor_summary.md`: one page, using numbers from `02_overnight_results.md` (test values already produced by the queue).
+
+**Test viewed for:** nothing new. The summary restates test numbers the queue had already produced.
+
 ## 2026-11-10: overnight queue results (automatic entry)
 
 Queue `scripts/overnight_queue.py` from commit `75d73e2`, started 2026-11-10 00:41. Selection by the amended pre-registered rule; winners {'southend': 'dense_v2_skip_wloss', 'richmond': 'dense_v2_skip_wloss'}.
