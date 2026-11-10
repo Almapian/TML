@@ -5,6 +5,16 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10 (night): long AR explained, independent checks, AR on the water level
+
+- **What:** `reports/2026-11-nov-fixes/04_long_ar_explained.md` sets out the long AR model step by step (concept, formula, code line), with figures L1 to L3 from the new `models/plot_long_ar_figures.py` (no training).
+- **Independent checks:** new `models/check_long_ar.py` compares three building blocks with independent references. Yule-Walker AR(200) against statsmodels `yule_walker(method='adjusted')`: max difference 1.1e-12. `gappy_acov` against a brute-force pairwise sum: 2.8e-17. `pi_to_weights` against an explicit recursive rollout: 1.7e-16.
+- **AR on the water level directly (no harmonic analysis):** not a new run. The level track was tuned on validation and scored on test in the baselines audit (`ba70745`); this entry re-reads those tables. Test average over the 73 leads:
+  - Southend: AR on level (90 d, Burg) 21.8 cm against AR on residual 20.8 cm; at 16h, 47.8 against 22.9 cm.
+  - Richmond: AR on level (181 d, Burg) 31.3 cm against 29.7 cm; at 16h, 52.2 against 35.6 cm.
+  - Interpretation: long history lets the AR learn the tide itself, whereas 16h cannot resolve the main constituents (the Rayleigh criterion).
+- **Test viewed:** the existing test tables for frozen configs, and single test forecasts in L2 (the same issue times as S3). No development decision depends on them.
+
 ## 2026-11-10 (late evening): supervisor summary, history-length explanation and continuous-forecast figures
 
 - **What:** new script `models/plot_supervisor_figures.py` (no training, frozen configs only), writing figures S1 to S4 to `reports/2026-11-nov-fixes/figures/` and their numbers to `outputs/diagnostics_2026-11/supervisor_figs_*.csv`. Two new sections in `reports/2026-11-nov-fixes/03_supervisor_summary.md`, written for a non-ML reader: how much past record the models use (why 30 days and 6 months, and every classical model held to 16h), and what the continuous forecasts look like.
