@@ -5,6 +5,33 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10: new variant dense_v2_skip_scaled (lead-scaled skip correction)
+
+- **What.** It is `dense_v2_skip` plus one change: the network's correction at lead k is multiplied by a fixed scale, s_k = (training residual-persistence RMSE at k) / (its mean over the 73 leads). The scale is computed once from the training windows and stored as a buffer in the checkpoint. The loss is unweighted and unchanged.
+- **Why.** In the skip sanity run, the network added a 4.3 cm rms correction at 10 min where persistence is already within 2 cm. Scaling keeps the correction structurally small at short leads (s = 0.089 at 10 min, 0.336 at 1h, 0.987 at 24h, 1.078 at 72h at Southend) without reweighting the loss.
+- **Checks.** `tests/test_dense_v2.py` 8/8, including that a zeroed network still gives residual persistence, the correction is scaled per lead, and the scale round-trips through the state dict.
+- **Run-check.** Southend, 1 epoch (about 460 batches): trains, finite losses and RMSE, 103 s per epoch, peak RAM 6.7 GB. Log: `logs/sanity/southend_dense_v2_skip_scaled_check1.log`. The run-check checkpoint was deleted. No test scoring.
+
+## 2026-11-10: AMENDED pre-registered selection rule (supersedes the rule in the "decisions" entry below)
+
+Written before any full training run of any dense v2 variant. Disclosure: the 2-epoch (skip, pad, skip_wloss) and 1-epoch (skip_scaled run-check) Southend validation sanity numbers had been seen when this was written. They come from undertrained models and are not used as evidence for or against any candidate.
+
+- **Candidates, per gauge (Southend Pier, Richmond Lock):**
+  - the old dense stage 2 (`dense`, existing checkpoint, never retrained);
+  - `dense_v2_skip`;
+  - `dense_v2_skip_wloss`;
+  - `dense_v2_skip_scaled`;
+  - `dense_v2_pad`.
+
+  All except the old model are trained from scratch, with full training and early stopping on each variant's own validation loss. For `dense_v2_skip_wloss` that is its weighted training objective.
+- **Score.** For each of the 73 dense leads h, on validation (2018 to 2020): RMSE_h(candidate) / min(RMSE_h(residual persistence), RMSE_h(UTide alone)). The score is the arithmetic mean of that ratio over all 73 leads. **Lowest score wins**, separately per gauge.
+  - Every RMSE is per lead, over every validation anchor, flagged targets masked, by `training.masked_rmse_mae`.
+  - Candidate RMSE: the `Dense stage 2` rows of `outputs/[richmond/]<variant>/dense_val_metrics.csv`.
+  - Reference RMSEs: the `Residual persistence` and `UTide standalone` rows of the same files. All candidates share the same validation anchors, so these rows are identical across files; the selection script asserts that. The old model's file has no persistence row, so its references come from a v2 file.
+- **Test scoring.** Only the winner per gauge is scored on test (`--score-test`). If the old dense model wins, no new test scoring happens; its test numbers are already published.
+- **Reporting.** Full per-lead validation curves for every candidate go in the report, whatever wins.
+- **If a candidate does not finish** (dropped, crashed or timed out), it is reported as such and the rule is applied to the candidates that did finish.
+
 ## 2026-11-10: dense v2 variants (skip, pad, weighted loss): investigation, code, sanity runs
 
 ### Why
@@ -95,6 +122,7 @@ Steps 1 to 4: all trained from scratch, validation scoring only.
 Combining skip and pad is not queued until both have been seen individually.
 
 ### Pre-registered selection rule (written 2026-11-10, before any dense_v2 variant has been trained or scored)
+**Superseded** by the amended rule at the top of this file (same day, before any full run).
 - **Candidates:** `dense_v2_skip` and `dense_v2_pad`, separately per gauge (Southend Pier, Richmond Lock).
 - **Metric:** the arithmetic mean, over all 73 dense leads (10min and 1h to 72h), of the validation RMSE (2018 to 2020) in `outputs/[richmond/]<variant>/dense_val_metrics.csv`, for model `Dense stage 2`. This is per-lead RMSE over every validation anchor, with flagged targets masked, by `training.masked_rmse_mae`.
 - **Winner:** the candidate with the lower metric. Only the winner is scored on test (`--score-test`); the loser's test numbers are never computed.
