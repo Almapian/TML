@@ -5,6 +5,35 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10 (about 00:45): overnight queue built, dry-run passed, launched
+
+### Code (commits `2352fae`, `fb967e4`, `a2f2c86`)
+- **Post-processing** (`models/postprocess_hw.py`): the dense correction to UTide is interpolated (linear and cubic) onto all 433 ten-minute leads; high-water and low-water height and timing errors are reported for UTide, native leads, both interpolations and the AR residual baseline at 10-min resolution.
+  - Checked on the legacy dense **validation** predictions, both gauges (`outputs/[richmond/]dense/postprocess/`). Southend high-water height bias goes from -6.7 cm (native leads only) to -3.8 cm (linear) and -3.3 cm (cubic); timing MAE goes from 15.2 to about 5 min. Cubic overshoots between the 10-min and 1h knots (0.074 m vs 0.050 m linear at 30 min).
+  - Richmond low waters are **not scored**: they pile up against a hard floor near -1.0 m ODN (almost none below -1.06 m; summer medians sit on it) and stay within 5 cm for a median 60 min, against 30 min at high water.
+- **dense_v2_skip_longmem**: skip plus 30 daily-mean residuals before the anchor's day (with missing flags), fed into the decoder initial state through a zero-initialised MLP. Smoke check: trains, 6.7 GB.
+- **Queue** (`scripts/overnight_queue.py`): as agreed, in the order recorded in the PR, with selection by the amended rule.
+  - Baselines are re-evaluated against the winner from their saved test forecasts (AR residual reproduction spot check, parity check), plus joint block-bootstrap tests over all 73 leads and over 24 to 72h.
+- Tests: `tests/test_dense_v2.py` 12/12, `test_stage3_windowing.py` 5/5, `test_baselines.py` 12/12.
+
+### Dry run (00:17 to 00:40, `--dry-run`: smoke training, 50 bootstrap reps, 2,000-anchor post-processing)
+- All 19 steps ok, plus the report, commit (`830a88a`), push and PR comment, all from the detached launch. That proves non-interactive git/gh from outside Claude Code.
+- The throwaway report and figures were removed in the next commit. All `*_smoke` models and outputs were deleted.
+
+### Disclosures
+- **Test viewed:**
+  - The joint-test values of the *legacy* dense model against the baselines (Southend, 50 reps) were printed while testing `eval_baselines_vs_dense.py`. Both models' test results were already published.
+  - The dry-run summary printed test RMSE of 8-batch smoke models, which are meaningless and have been deleted.
+  - No configuration choice used either.
+- **Deleted by mistake** during the dry-run cleanup: `outputs/richmond/baselines_smoke/`. This was a gitignored scratch folder from the 31 Oct baseline smoke check, not a result of record.
+
+### Launch
+- `powershell -ExecutionPolicy Bypass -File scripts\launch_queue.ps1`, which starts pythonw through Win32_Process.Create, outside the terminal's process tree.
+- Logs: `logs/overnight_2026-11-10/`. Status: `python scripts/queue_status.py`.
+- Deadline 17:00 Europe/London; hard stop for steps 16:35.
+- ntfy: not configured (no topic given).
+- Power settings checked with powercfg: sleep and hibernate after idle are "never" (AC and DC); **lid close = Sleep (AC and DC)**, which keep-awake does not override, so the lid must stay open.
+
 ## 2026-11-10: new variant dense_v2_skip_scaled (lead-scaled skip correction)
 
 - **What.** It is `dense_v2_skip` plus one change: the network's correction at lead k is multiplied by a fixed scale, s_k = (training residual-persistence RMSE at k) / (its mean over the 73 leads). The scale is computed once from the training windows and stored as a buffer in the checkpoint. The loss is unweighted and unchanged.
