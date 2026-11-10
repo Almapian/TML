@@ -5,6 +5,35 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10: overnight queue results (automatic entry)
+
+Queue `scripts/overnight_queue.py` from commit `75d73e2`, started 2026-11-10 00:41. Selection by the amended pre-registered rule; winners {'southend': 'dense_v2_skip_wloss', 'richmond': 'dense_v2_skip_wloss'}.
+
+**Test viewed for:** southend: dense_v2_skip_wloss, richmond: dense_v2_skip_wloss (winner test scoring), the classical baselines re-scored against each winner (test, joint tests), and post-processing on the winner's test predictions. No other variant was scored on test.
+
+Steps:
+- 01_train_skip_wloss_southend: ok
+- 02_train_skip_scaled_southend: ok
+- 03_train_pad_southend: ok
+- 04_train_skip_wloss_richmond: ok
+- 05_train_skip_scaled_richmond: ok
+- 06_train_pad_richmond: ok
+- 07_train_skip_southend: ok
+- 08_select_southend: ok
+- 08_select_richmond: ok
+- 08_testscore_winner_southend: ok (test-scored winner dense_v2_skip_wloss)
+- 08_testscore_winner_richmond: ok (test-scored winner dense_v2_skip_wloss)
+- 09_baselines_vs_winner_southend: ok
+- 09_baselines_vs_winner_richmond: ok
+- 10_postprocess_southend_val: ok
+- 10_postprocess_southend_test: ok
+- 10_postprocess_richmond_val: ok
+- 10_postprocess_richmond_test: ok
+- 11_optional_train_skip_richmond: ok
+- 11_optional_train_skip_longmem_southend: ok
+
+Report: `reports/2026-11-nov-fixes/02_overnight_results.md`. Logs: `logs/overnight_2026-11-10/`.
+
 ## 2026-11-10 (about 00:45): overnight queue built, dry-run passed, launched
 
 ### Code (commits `2352fae`, `fb967e4`, `a2f2c86`)
