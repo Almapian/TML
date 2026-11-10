@@ -5,6 +5,14 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-10 (late evening): supervisor summary, history-length explanation and continuous-forecast figures
+
+- **What:** new script `models/plot_supervisor_figures.py` (no training, frozen configs only), writing figures S1 to S4 to `reports/2026-11-nov-fixes/figures/` and their numbers to `outputs/diagnostics_2026-11/supervisor_figs_*.csv`. Two new sections in `reports/2026-11-nov-fixes/03_supervisor_summary.md`, written for a non-ML reader: how much past record the models use (why 30 days and 6 months, and every classical model held to 16h), and what the continuous forecasts look like.
+- **Why the history lengths:** they come from the existing Optuna search on validation (`search_ar_residual_x.csv`, 9 lengths from 16h to 1 year). Best validation score per length, autoregressive surge model: Southend lowest at 30 days (21.15 cm), worse at 1 year (21.72 cm); Richmond falls to 29.55 cm at 30 days and is nearly flat after (lowest 29.28 cm at 180 days), so the 180-day choice is worth only 0.3 cm over 30 days.
+- **Same 16h history, test (already scored in the baselines audit; read again, not re-run):** average over the 73 leads, neural 21.5 cm against ridge 22.3, GP 22.8 and AR 22.9 at Southend; neural 27.9 against ridge 33.4, AR 35.6 and GP 38.5 at Richmond. Level-track 16h models: 45 to 54 cm.
+- **Test viewed:** yes, for the finished configurations only (no development decision depends on it). S3 plots single test forecasts: 2022-02-17 12:00 (Storm Eunice, the dissertation's example date) and, per gauge, the 12:00 issue whose neural 72h RMSE is the test median (Southend 2023-05-25, 15.5 cm; Richmond 2024-02-19, 21.6 cm). S4 scores the neural model (cubic and native) and the AR model at all 433 10-minute leads on hourly test anchors. These match the earlier post-processing numbers (for example, neural cubic at 30 min: 2.8 cm Southend, 7.1 cm Richmond); the AR 10-minute curve on test is new (30 min: 2.5 cm Southend, 8.2 cm Richmond).
+- **Palette:** blue, orange, aqua, yellow; passes the dataviz CVD and normal-vision checks; contrast is relieved by legends and tables.
+
 ## 2026-11-10 (evening): review of the overnight results, validation comparison with AR, supervisor summary
 
 ### Late candidate at Richmond
