@@ -36,6 +36,8 @@ The classical models (autoregressive, ridge regression, Gaussian process, SARIMA
 
 - **Richmond:** the neural model is better than the best classical model by 1.8 cm on average (2.2 cm over 24h to 72h), and the difference is statistically clear.
 - **Southend:** the autoregressive model is better than the neural model by 0.7 cm, also statistically clear. At the estuary mouth the surge behaves close to linearly, which a linear model captures fully.
+- **The best classical model's edge is history, not method.** It uses the last 30 days (Southend) or 6 months (Richmond) of the surge residual, against 16h for the neural model. Held to 16h, the same autoregressive model is worse than the neural model at both gauges on validation (Southend 22.2 against 20.9 cm, Richmond 33.9 against 26.0 cm, averaged over the 73 leads).
+- **For a port authority:** harmonic prediction plus an autoregressive correction is cheap, transparent (a table of weights) and runs in any telemetry system. A neural model is worth its extra cost only where river flow makes the tide nonlinear, as at Richmond. Details: Claude Doc "Classical baselines vs neural networks".
 
 ## Open problems
 

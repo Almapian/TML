@@ -23,6 +23,12 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 **Test viewed for:** nothing new. The summary restates test numbers the queue had already produced.
 
+### Equal-history comparison and AR weight breakdown (no training)
+- `models/diag_val_vs_ar.py --with-parity` adds the AR residual baseline held to 16h (its frozen parity config). Validation, mean RMSE over 73 leads: Southend AR 16h 0.2224, AR 30 days 0.2085, neural (legacy) 0.2088; Richmond AR 16h 0.3389, AR 181 days 0.2893, neural 0.2601. The sqrt-of-mean-MSE summaries reproduce the search's `val_rmse` in `best_configs.json` (0.2115, 0.2254, 0.2929, 0.3434). Output: `outputs/diagnostics_2026-11/val_vs_ar_with_parity_<gauge>.csv`.
+- `models/diag_ar_weights.py`: sums of the AR forecast weights by lag window. At 72h, Southend keeps 0.43 of a sustained offset (0.36 from 22.7h to 30 days back), Richmond 0.91. Output: `outputs/diagnostics_2026-11/ar_weight_windows.csv`.
+- Claude Doc "Classical baselines vs neural networks" updated with three sections (best classical model explained; update against the new neural model; port-authority view) and a summary line. Its incomplete-history figures are from `baseline_incomplete_history.csv` (test, already published in the October audit).
+- **Test viewed for:** nothing new.
+
 ## 2026-11-10: overnight queue results (automatic entry)
 
 Queue `scripts/overnight_queue.py` from commit `75d73e2`, started 2026-11-10 00:41. Selection by the amended pre-registered rule; winners {'southend': 'dense_v2_skip_wloss', 'richmond': 'dense_v2_skip_wloss'}.
