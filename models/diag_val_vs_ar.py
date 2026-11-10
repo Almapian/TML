@@ -5,8 +5,10 @@ numbers are needed for development decisions. The AR residual baseline uses its 
 refit on train only (as eval_baselines does), forecast at the 73 dense leads from the same
 validation anchors as the dense models. All models are scored with the same mask and targets.
 
-    python models/diag_val_vs_ar.py
-Outputs: outputs/diagnostics_2026-11/val_vs_ar_<gauge>.csv
+    python models/diag_val_vs_ar.py [--with-parity]
+Outputs: outputs/diagnostics_2026-11/val_vs_ar_<gauge>.csv, or with --with-parity
+val_vs_ar_with_parity_<gauge>.csv, which adds the AR residual baseline restricted to the neural
+models' 16h history (its frozen 'parity' config) and the sqrt-of-mean-MSE summary the search used.
 """
 import pathlib
 import sys
@@ -29,7 +31,7 @@ VARIANTS = ['dense', 'dense_v2_skip', 'dense_v2_skip_wloss', 'dense_v2_skip_scal
 CHUNK = 20000
 
 
-def main():
+def main(with_parity=False):
     out_dir = paths.ensure_dir(paths.OUTPUTS_DIR / 'diagnostics_2026-11')
     for gauge in C.GAUGES:
         s = B.load_series(gauge, verbose=False)
@@ -50,7 +52,13 @@ def main():
         y_train = s.track('residual')[:s.n_train]
         phi = B.fit_ar(y_train, best['order'], best['estimator'], best.get('jitter', 1e-5))
         ar = B.linear_from_pi(phi, y_train, steps=B.DENSE_STEPS)
-        names = list(preds) + ['ar_residual', 'utide']
+        cfgs = json.loads(paths.baseline_config_path(gauge).read_text(encoding='utf-8'))
+        extra = {}
+        if with_parity:
+            bp = cfgs['ar_residual_parity']['config']
+            phi_p = B.fit_ar(y_train, bp['order'], bp['estimator'], bp.get('jitter', 1e-5))
+            extra['ar_residual_16h'] = B.linear_from_pi(phi_p, y_train, steps=B.DENSE_STEPS)
+        names = list(preds) + ['ar_residual'] + list(extra) + ['utide']
         sse = {k: np.zeros(len(B.DENSE_STEPS)) for k in names}
         n = np.zeros(len(B.DENSE_STEPS))
         for lo in range(0, len(anchors), CHUNK):
@@ -59,6 +67,8 @@ def main():
             u = s.utide[a[:, None] + B.DENSE_STEPS[None, :]]
             P = {k: p[lo:lo + CHUNK] for k, p in preds.items()}
             P['ar_residual'] = ar.forecast(s, 'residual', a, steps=B.DENSE_STEPS) + u
+            for k, m in extra.items():
+                P[k] = m.forecast(s, 'residual', a, steps=B.DENSE_STEPS) + u
             P['utide'] = u
             ok = ~F & ~np.isnan(Y)
             for k in P:
@@ -68,8 +78,8 @@ def main():
             n += ok.sum(0)
         rmse = pd.DataFrame({k: np.sqrt(v / n) for k, v in sse.items()}, index=list(C.DENSE_HORIZONS))
         rmse.index.name = 'horizon'
-        rmse.to_csv(out_dir / f'val_vs_ar_{gauge}.csv')
-        summ = pd.DataFrame({'mean_73': rmse.mean(), 'mean_24_72h': rmse.iloc[24:].mean(),
+        rmse.to_csv(out_dir / (f'val_vs_ar_with_parity_{gauge}.csv' if with_parity else f'val_vs_ar_{gauge}.csv'))
+        summ = pd.DataFrame({'mean_73': rmse.mean(), 'sqrt_mean_mse': np.sqrt((rmse ** 2).mean()), 'mean_24_72h': rmse.iloc[24:].mean(),
                              'gap_to_ar_73_mm': (rmse.mean() - rmse['ar_residual'].mean()) * 1000,
                              'gap_to_ar_24_72h_mm': (rmse.iloc[24:].mean() - rmse['ar_residual'].iloc[24:].mean()) * 1000})
         print(f'\n== {gauge} (validation, {len(anchors):,} anchors)')
@@ -78,4 +88,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    main('--with-parity' in sys.argv)
