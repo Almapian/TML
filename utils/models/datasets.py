@@ -211,6 +211,40 @@ class Stage2Data:
     Ua_test: np.ndarray = None     # UTide at each test anchor (dense v2)
     utide_full: np.ndarray = None  # regular-grid reconstruction for decoder padding (dense v2)
     utide_start: np.datetime64 = None
+    daily_residual: dict = None    # long-memory input: daily-mean UTide residual over the record
+
+
+LONG_MEMORY_MIN_ROWS = 72      # a day needs at least half its 144 unflagged 10-min rows
+
+
+def daily_residual_series(df):
+    """Daily mean of observed - UTide (train-only fit) over the whole record, from unflagged rows.
+    Days with fewer than LONG_MEMORY_MIN_ROWS rows are marked missing. Computed once; each window
+    then only gathers its 30 numbers from it."""
+    ok = ~df['is_flagged'].to_numpy()
+    day = df['DateTime'].to_numpy().astype('datetime64[D]')[ok]
+    resid = (df['Observed_ODN'].to_numpy(np.float64) - df['utide_recon'].to_numpy(np.float64))[ok]
+    start = day.min()
+    idx = (day - start).astype(np.int64)
+    n_days = int(idx.max()) + 1
+    count = np.bincount(idx, minlength=n_days)
+    total = np.bincount(idx, weights=resid, minlength=n_days)
+    valid = count >= LONG_MEMORY_MIN_ROWS
+    mean = np.where(valid, total / np.maximum(count, 1), 0.0)
+    return {'start': start, 'mean': mean.astype(np.float32), 'valid': valid}
+
+
+def long_memory_features(anchor_time, daily, n_days, scale):
+    """(N, n_days, 2): the daily-mean residual (divided by `scale`, 0 where missing) and a missing
+    flag, for the n_days complete calendar days BEFORE each anchor's own day, oldest first. Only
+    days that have fully ended before the anchor are used, so nothing at or after it leaks in."""
+    a_day = (np.asarray(anchor_time).astype('datetime64[D]') - daily['start']).astype(np.int64)
+    idx = a_day[:, None] - np.arange(n_days, 0, -1)[None, :]          # D-n .. D-1
+    inside = (idx >= 0) & (idx < len(daily['mean']))
+    safe = np.clip(idx, 0, len(daily['mean']) - 1)
+    valid = inside & daily['valid'][safe]
+    value = np.where(valid, daily['mean'][safe] / scale, 0.0)
+    return np.stack([value, (~valid).astype(np.float32)], axis=-1).astype(np.float32)
 
 
 def pad_utide(time_matrix, horizon_steps, pad_steps, utide_full, utide_start):
@@ -227,7 +261,7 @@ def pad_utide(time_matrix, horizon_steps, pad_steps, utide_full, utide_start):
 
 def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_STRIDE,
                    data_path=None, verbose=True, gauge='southend', utide_fit_stride=None,
-                   with_anchor_utide=False, decoder_pad_steps=0):
+                   with_anchor_utide=False, decoder_pad_steps=0, long_memory_days=0):
     """Stage 2: UTide fit on train only, reconstructed across the full span and used both
     as the decoder input feature and as the standalone UTide comparator.
 
@@ -235,7 +269,8 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
     Dense v2 options (both off by default, which reproduces the original tensors exactly):
       with_anchor_utide  add 'Ua' (UTide at the anchor, scaled) to every tensor dict
       decoder_pad_steps  append that many UTide points after the last target to 'Ydec'
-                         (decoder input only; Ydec_test stays at the targets)."""
+                         (decoder input only; Ydec_test stays at the targets)
+      long_memory_days   add 'Lm' (N, days, 2): daily-mean residuals before the anchor day."""
     info = gauge_info(gauge)
     stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
     df = load_gauge_df(data_path or info['csv'], verbose=verbose)
@@ -298,10 +333,19 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
         train_tensors['Ua'] = to_tensor(sc(Ua_train), device)
         val_tensors['Ua'] = to_tensor(sc(Ua_val), device)
         test_tensors['Ua'] = to_tensor(sc(Ua_test), device)
+    daily = None
+    if long_memory_days:
+        daily = daily_residual_series(df)
+        for tensors, T_ in ((train_tensors, T_train), (val_tensors, T_val), (test_tensors, Time_test)):
+            anchor = T_[:, 0] - np.timedelta64(int(horizon_steps[0]) * 10, 'm')
+            tensors['Lm'] = to_tensor(long_memory_features(anchor, daily, long_memory_days, train_std), device)
+        if verbose:
+            print(f"long memory: {long_memory_days} daily-mean residuals before the anchor day; "
+                  f"{100 * (1 - daily['valid'].mean()):.1f}% of record days missing")
 
     # the flat stage-1 comparators take no decoder input
-    train_tensors_flat = {k: v for k, v in train_tensors.items() if k not in ('Ydec', 'Ua')}
-    val_tensors_flat = {k: v for k, v in val_tensors.items() if k not in ('Ydec', 'Ua')}
+    train_tensors_flat = {k: v for k, v in train_tensors.items() if k not in ('Ydec', 'Ua', 'Lm')}
+    val_tensors_flat = {k: v for k, v in val_tensors.items() if k not in ('Ydec', 'Ua', 'Lm')}
     test_tensors_flat = {'X': test_tensors['X']}
 
     return Stage2Data(df, train_df, val_df, test_df, coef,
@@ -309,7 +353,7 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
                       train_mean, train_std,
                       train_tensors, val_tensors, test_tensors,
                       train_tensors_flat, val_tensors_flat, test_tensors_flat,
-                      Ua_test, utide_full, utide_start)
+                      Ua_test, utide_full, utide_start, daily)
 
 
 def prepare_stage2_reduced(device, df, train_start, horizon_steps, lookback=LOOKBACK,

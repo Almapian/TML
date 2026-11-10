@@ -92,6 +92,7 @@ LEGACY = VARIANT == C.DENSE_LEGACY_VARIANT
 FLAGS = C.dense_variant_flags(VARIANT)
 SKIP, PAD, WLOSS = FLAGS['residual_skip'], FLAGS['decoder_pad_steps'], FLAGS['persistence_loss_weights']
 SCALED = FLAGS['lead_scaled_correction']
+LONGMEM = FLAGS['long_memory_days']
 LOAD_FROM_CHECKPOINT = True
 
 if SANITY_EPOCHS and (LEGACY or SCORE_TEST):
@@ -121,8 +122,10 @@ DEVICE = C.describe_device()
 C.set_seed()
 
 predict_s2 = lambda model, batch: model(batch['X'], batch['Ydec'])[0]           # sparse / legacy call
-predict_dense2 = ((lambda model, batch: model(batch['X'], batch['Ydec'], batch['Ua'])[0]) if SKIP
-                  else predict_s2)
+def predict_dense2(model, batch):
+    """The dense stage 2 call for this variant (extra inputs only when its flags need them)."""
+    return model(batch['X'], batch['Ydec'], batch['Ua'] if SKIP else None,
+                 batch['Lm'] if LONGMEM else None)[0]
 predict_tideonly = lambda model, batch: model(batch['X'], batch['Ydec'])[0]
 histories = {}
 metric_rows = {s: [] for s in SPLITS}
@@ -193,7 +196,7 @@ def matched(split, label_dense, label_sparse, dense, sparse):
 # %% ======================== Stage 2, dense =================================
 t0 = time.time()
 data = datasets.prepare_stage2(DEVICE, DENSE_STEPS, lookback=LOOKBACK, train_stride=TRAIN_STRIDE, gauge=GAUGE,
-                               with_anchor_utide=True, decoder_pad_steps=PAD)
+                               with_anchor_utide=True, decoder_pad_steps=PAD, long_memory_days=LONGMEM)
 print(f"dense stage-2 tensors: X {tuple(data.train_tensors['X'].shape)}, "
       f"Ydec {tuple(data.train_tensors['Ydec'].shape)}, Y {tuple(data.train_tensors['Y'].shape)}")
 scaler = (data.train_mean, data.train_std)
@@ -217,7 +220,8 @@ if SCALED:
     lead_scale = (lead_scale / lead_scale.mean()).cpu()
     print(f"lead scale on the correction (mean 1): 10min {lead_scale[0]:.3f}, 1h {lead_scale[1]:.3f}, "
           f"24h {lead_scale[24]:.3f}, 72h {lead_scale[-1]:.3f}")
-s2 = TidalSeq2Seq(residual_skip=SKIP, n_out=len(DENSE_NAMES) if PAD else None, lead_scale=lead_scale).to(DEVICE)
+s2 = TidalSeq2Seq(residual_skip=SKIP, n_out=len(DENSE_NAMES) if PAD else None, lead_scale=lead_scale,
+                  long_memory_days=LONGMEM).to(DEVICE)
 print(f"TidalSeq2Seq parameters: {sum(p.numel() for p in s2.parameters()):,} (same class as sparse stage 2)")
 
 s2_weights = None
@@ -240,7 +244,7 @@ training.save_checkpoint({
     'config': {'model': 'TidalSeq2Seq', 'variant': VARIANT, 'flags': FLAGS, 'horizons': DENSE_HORIZONS,
                'lookback': LOOKBACK, 'lr': S2_LR, 'batch_size': S2_BATCH, 'weight_decay': 0.0,
                'residual_skip': SKIP, 'decoder_pad_steps': PAD, 'n_out': len(DENSE_NAMES) if PAD else None,
-               'lead_scale': None if lead_scale is None else lead_scale.tolist()},
+               'lead_scale': None if lead_scale is None else lead_scale.tolist(), 'long_memory_days': LONGMEM},
     'scaler': {'mean': data.train_mean, 'std': data.train_std},
 }, ckpt_s2, LOAD_FROM_CHECKPOINT)
 
@@ -265,6 +269,9 @@ for split in SPLITS:
         tensors = {'X': datasets.to_tensor(sc(X), DEVICE), 'Ydec': datasets.to_tensor(sc(Yd_in), DEVICE)}
         if SKIP:
             tensors['Ua'] = datasets.to_tensor(sc(Ua), DEVICE)
+        if LONGMEM:
+            tensors['Lm'] = datasets.to_tensor(datasets.long_memory_features(
+                T[:, 0] - np.timedelta64(10, 'm'), data.daily_residual, LONGMEM, data.train_std), DEVICE)
         split_df = data.val_df
         X_last = X[:, -1]
     _, _, preds = training.compute_metrics(s2, predict_dense2, tensors, Y, Flag, *scaler)

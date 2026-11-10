@@ -183,12 +183,15 @@ DENSE_VARIANT_PATTERN = r'dense(_[a-z0-9]+)*'
 #   lead_scaled_correction  with residual_skip: the network correction at lead k is multiplied
 #                      by that lead's training residual-persistence RMSE / its mean over leads
 #                      (fixed, computed once); the loss is unchanged
+#   long_memory_days   extra input: daily-mean UTide residual for that many days before the
+#                      anchor day (+ missing flags), into the decoder's initial state
 #   persistence_loss_weights  each lead's squared error divided by that lead's
 #                      residual-persistence MSE on the training set (normalised to mean 1)
 #   train_stage3       also (re)train the dense stage 3 tide-only model. The v2 variants only
 #                      change stage 2, so retraining stage 3 would just repeat the legacy model.
 DENSE_VARIANT_DEFAULTS = {'residual_skip': False, 'decoder_pad_steps': 0,
                           'persistence_loss_weights': False, 'lead_scaled_correction': False,
+                          'long_memory_days': 0,
                           'train_stage3': True}
 DENSE_VARIANTS = {
     'dense': {},
@@ -196,6 +199,7 @@ DENSE_VARIANTS = {
     'dense_v2_pad': {'decoder_pad_steps': 3, 'train_stage3': False},
     'dense_v2_skip_wloss': {'residual_skip': True, 'persistence_loss_weights': True, 'train_stage3': False},
     'dense_v2_skip_scaled': {'residual_skip': True, 'lead_scaled_correction': True, 'train_stage3': False},
+    'dense_v2_skip_longmem': {'residual_skip': True, 'long_memory_days': 30, 'train_stage3': False},
 }
 
 

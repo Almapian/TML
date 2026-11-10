@@ -87,13 +87,16 @@ class TidalDecoder(nn.Module):
         self.attn = BatchedAttention(2 * hidden_size, enc_hidden_size, attn_dim)
         self.out = nn.Linear(2 * hidden_size + enc_hidden_size, 1)
 
-    def forward(self, utide_future, enc_outputs, enc_final):
+    def forward(self, utide_future, enc_outputs, enc_final, init_offset=None):
         h_n, c_n = enc_final                        # each (enc_num_layers, B, enc_hidden_size)
         h_last, c_last = h_n[-1], c_n[-1]           # final encoder layer only: (B, enc_hidden_size)
         B = h_last.size(0)
 
-        h0 = self.init_h(h_last).view(B, self.num_layers * 2, self.hidden_size).permute(1, 0, 2).contiguous()
-        c0 = self.init_c(c_last).view(B, self.num_layers * 2, self.hidden_size).permute(1, 0, 2).contiguous()
+        h0, c0 = self.init_h(h_last), self.init_c(c_last)     # (B, num_layers * 2 * hidden_size)
+        if init_offset is not None:                           # dense v2 long memory: additive offsets
+            h0, c0 = h0 + init_offset[0], c0 + init_offset[1]
+        h0 = h0.view(B, self.num_layers * 2, self.hidden_size).permute(1, 0, 2).contiguous()
+        c0 = c0.view(B, self.num_layers * 2, self.hidden_size).permute(1, 0, 2).contiguous()
 
         dec_out, _ = self.lstm(utide_future, (h0, c0))       # (B, H, 2*hidden_size)
         context, weights = self.attn(dec_out, enc_outputs)   # (B, H, enc_hidden_size)
@@ -120,6 +123,10 @@ class TidalSeq2Seq(nn.Module):
       n_out          the decoder runs over the whole `utide_future` sequence, which may carry
                      padding steps past the last target, and only the first `n_out` outputs are
                      returned (so padding never reaches the loss or the scores).
+      long_memory_days  an extra input of that many daily-mean UTide residuals (and missing
+                     flags) before the anchor day, mapped by a small MLP to additive offsets on
+                     the decoder's initial (h, c). The last layer starts at zero, so at
+                     initialisation the model is exactly the one without long memory.
       lead_scale     with residual_skip: output = persistence + lead_scale[k] * network output,
                      a fixed per-lead scale (a buffer, saved in the checkpoint) that keeps the
                      correction small where persistence is already good.
@@ -127,7 +134,8 @@ class TidalSeq2Seq(nn.Module):
 
     def __init__(self, enc_hidden_size=ENC_HIDDEN_SIZE, enc_num_layers=ENC_NUM_LAYERS,
                  dec_hidden_size=DEC_HIDDEN_SIZE, dec_num_layers=DEC_NUM_LAYERS,
-                 attn_dim=ATTN_DIM_TIDE, residual_skip=False, n_out=None, lead_scale=None):
+                 attn_dim=ATTN_DIM_TIDE, residual_skip=False, n_out=None, lead_scale=None,
+                 long_memory_days=0, long_memory_hidden=32):
         super().__init__()
         self.encoder = Encoder(1, enc_hidden_size, enc_num_layers)
         self.decoder = TidalDecoder(1, dec_hidden_size, enc_hidden_size, dec_num_layers, attn_dim)
@@ -141,10 +149,23 @@ class TidalSeq2Seq(nn.Module):
             self.register_buffer('lead_scale', torch.as_tensor(lead_scale, dtype=torch.float32))
         else:
             self.lead_scale = None
+        self.long_memory_days = long_memory_days
+        if long_memory_days:
+            state = dec_num_layers * 2 * dec_hidden_size
+            self.long_memory = nn.Sequential(nn.Linear(2 * long_memory_days, long_memory_hidden), nn.Tanh(),
+                                             nn.Linear(long_memory_hidden, 2 * state))
+            nn.init.zeros_(self.long_memory[2].weight)
+            nn.init.zeros_(self.long_memory[2].bias)
 
-    def forward(self, x_hist, utide_future, utide_anchor=None):
+    def forward(self, x_hist, utide_future, utide_anchor=None, long_memory=None):
         enc_outputs, enc_final = self.encoder(x_hist.unsqueeze(-1))
-        preds, weights = self.decoder(utide_future.unsqueeze(-1), enc_outputs, enc_final)
+        offset = None
+        if self.long_memory_days:
+            if long_memory is None:
+                raise ValueError('long_memory_days needs the long_memory input (B, days, 2)')
+            off = self.long_memory(long_memory.flatten(1))
+            offset = off.chunk(2, dim=-1)
+        preds, weights = self.decoder(utide_future.unsqueeze(-1), enc_outputs, enc_final, offset)
         if self.n_out is not None:
             preds, weights = preds[:, :self.n_out], weights[:, :self.n_out]
         if self.residual_skip:

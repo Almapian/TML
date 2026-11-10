@@ -131,6 +131,58 @@ def test_padding_from_regular_grid_keeps_anchors_and_values():
     assert np.allclose(grid_utide[idx[:, None] + np.array(STEPS)[None, :]], Yd)
 
 
+def test_long_memory_uses_only_days_before_the_anchor_day():
+    t = pd.date_range('2015-01-01', periods=40 * 144, freq='10min')
+    df = pd.DataFrame({'DateTime': t, 'Observed_ODN': np.zeros(len(t)), 'is_flagged': np.zeros(len(t), bool),
+                       'utide_recon': np.zeros(len(t))})
+    day = (t.values.astype('datetime64[D]') - np.datetime64('2015-01-01')).astype(int)
+    df['Observed_ODN'] = day.astype(float)                       # residual on day d = d
+    df.loc[day == 33, 'is_flagged'] = True                       # day 33 missing
+    daily = datasets.daily_residual_series(df)
+    anchor = np.array([np.datetime64('2015-02-05T13:20')])       # day 35
+    f = datasets.long_memory_features(anchor, daily, 30, 1.0)
+    assert f.shape == (1, 30, 2)
+    assert list(f[0, :, 0]) == [d if d != 33 else 0.0 for d in range(5, 35)], 'days D-30..D-1, oldest first'
+    assert list(f[0, :, 1]) == [1.0 if d == 33 else 0.0 for d in range(5, 35)], 'missing day flagged'
+    df2 = df.copy(); df2.loc[day >= 35, 'Observed_ODN'] = 99.0   # change the anchor day and later
+    f2 = datasets.long_memory_features(anchor, datasets.daily_residual_series(df2), 30, 1.0)
+    assert np.array_equal(f, f2), 'long-memory input must not see the anchor day or later'
+
+
+def test_long_memory_starts_as_the_skip_model():
+    x, u, ua = _inputs()
+    lm = torch.randn(N, 30, 2)
+    torch.manual_seed(3); a = TidalSeq2Seq(residual_skip=True)
+    torch.manual_seed(3); b = TidalSeq2Seq(residual_skip=True, long_memory_days=30)
+    b.load_state_dict(a.state_dict(), strict=False)
+    assert torch.allclose(a(x, u, ua)[0], b(x, u, ua, lm)[0], atol=1e-6), 'zero-initialised: no change at start'
+
+
+def test_interpolation_exact_and_linear():
+    sys.path.insert(0, str(REPO_ROOT / 'models'))
+    import postprocess_hw as P
+    k = P.KNOTS.astype(float)
+    c = np.vstack([0.01 * k + 0.3, -0.002 * k])                  # linear in lead
+    for kind in ('linear', 'cubic'):
+        full = P.interpolate(c, kind)
+        assert np.allclose(full, np.vstack([0.01 * P.FULL_STEPS + 0.3, -0.002 * P.FULL_STEPS])), kind
+
+
+def test_high_water_detection_on_a_tide():
+    sys.path.insert(0, str(REPO_ROOT / 'models'))
+    import postprocess_hw as P
+    from utils.models import baselines as Bm
+    n = 30 * 144
+    steps = np.arange(n)
+    level = 2.0 * np.cos(2 * np.pi * steps / 74.5) + 0.3 * np.cos(2 * np.pi * steps / 72.0)
+    s = Bm.Series('t', np.datetime64('2020-01-01') + steps * np.timedelta64(10, 'm'), level,
+                  np.zeros(n), np.zeros(n, bool), n)
+    highs = P.extremes(s, 'high')
+    per_day = len(highs) / 30
+    assert 1.85 < per_day < 2.0, per_day
+    assert np.all(level[highs] > 1.5)
+
+
 if __name__ == '__main__':
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith('test_')]
     failed = 0
