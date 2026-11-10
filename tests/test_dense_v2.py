@@ -40,6 +40,23 @@ def test_skip_with_zero_network_is_residual_persistence():
     assert torch.equal(pred, expected), 'zeroed network should give residual persistence exactly'
 
 
+def test_scaled_skip_scales_the_correction_per_lead():
+    x, u, ua = _inputs()
+    scale = torch.linspace(0.1, 2.0, H)
+    m = TidalSeq2Seq(residual_skip=True, lead_scale=scale)
+    _zero_network(m)
+    base = u + (x[:, -1] - ua)[:, None]
+    assert torch.equal(m(x, u, ua)[0], base), 'zeroed network should still give residual persistence'
+    with torch.no_grad():
+        m.decoder.out.bias.fill_(1.0)                    # network output = 1 at every lead
+    assert torch.allclose(m(x, u, ua)[0], base + scale[None, :], atol=1e-6)
+    # the scale is saved with the weights, and a model built with other values loads it back
+    m2 = TidalSeq2Seq(residual_skip=True, lead_scale=torch.ones(H))
+    m2.load_state_dict(m.state_dict())
+    assert torch.equal(m2.lead_scale, scale)
+    assert 'lead_scale' not in TidalSeq2Seq().state_dict(), 'only the scaled variant carries the buffer'
+
+
 def test_skip_needs_anchor_utide():
     x, u, _ = _inputs()
     try:

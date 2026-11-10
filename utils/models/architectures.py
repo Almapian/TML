@@ -112,24 +112,35 @@ def residual_persistence(x_hist, utide_targets, utide_anchor):
 class TidalSeq2Seq(nn.Module):
     """Stage 2: LSTM encoder + attention + BiLSTM decoder fed known-future UTide values.
 
-    Dense v2 options, both off by default (the original model, and its checkpoints, unchanged;
-    neither adds parameters):
+    Dense v2 options, all off by default (the original model, and its checkpoints, unchanged;
+    none adds trainable parameters):
       residual_skip  output = residual persistence + network output, so the network learns a
                      correction to UTide(t+k) + (obs(t) - UTide(t)). forward() then needs
                      `utide_anchor`, UTide at the anchor time.
       n_out          the decoder runs over the whole `utide_future` sequence, which may carry
                      padding steps past the last target, and only the first `n_out` outputs are
                      returned (so padding never reaches the loss or the scores).
+      lead_scale     with residual_skip: output = persistence + lead_scale[k] * network output,
+                     a fixed per-lead scale (a buffer, saved in the checkpoint) that keeps the
+                     correction small where persistence is already good.
     """
 
     def __init__(self, enc_hidden_size=ENC_HIDDEN_SIZE, enc_num_layers=ENC_NUM_LAYERS,
                  dec_hidden_size=DEC_HIDDEN_SIZE, dec_num_layers=DEC_NUM_LAYERS,
-                 attn_dim=ATTN_DIM_TIDE, residual_skip=False, n_out=None):
+                 attn_dim=ATTN_DIM_TIDE, residual_skip=False, n_out=None, lead_scale=None):
         super().__init__()
         self.encoder = Encoder(1, enc_hidden_size, enc_num_layers)
         self.decoder = TidalDecoder(1, dec_hidden_size, enc_hidden_size, dec_num_layers, attn_dim)
         self.residual_skip = residual_skip
         self.n_out = n_out
+        # lead_scale (needs residual_skip): fixed per-lead multiplier on the network's correction,
+        # stored as a buffer so a checkpoint carries it. Absent (None) in every other variant.
+        if lead_scale is not None:
+            if not residual_skip:
+                raise ValueError('lead_scale scales the residual-skip correction; it needs residual_skip=True')
+            self.register_buffer('lead_scale', torch.as_tensor(lead_scale, dtype=torch.float32))
+        else:
+            self.lead_scale = None
 
     def forward(self, x_hist, utide_future, utide_anchor=None):
         enc_outputs, enc_final = self.encoder(x_hist.unsqueeze(-1))
@@ -139,6 +150,8 @@ class TidalSeq2Seq(nn.Module):
         if self.residual_skip:
             if utide_anchor is None:
                 raise ValueError('residual_skip needs utide_anchor (UTide at the anchor time)')
+            if self.lead_scale is not None:
+                preds = preds * self.lead_scale
             preds = preds + residual_persistence(x_hist, utide_future[:, :preds.shape[1]], utide_anchor)
         return preds, weights
 

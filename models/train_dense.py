@@ -91,6 +91,7 @@ VARIANT = C.dense_variant()
 LEGACY = VARIANT == C.DENSE_LEGACY_VARIANT
 FLAGS = C.dense_variant_flags(VARIANT)
 SKIP, PAD, WLOSS = FLAGS['residual_skip'], FLAGS['decoder_pad_steps'], FLAGS['persistence_loss_weights']
+SCALED = FLAGS['lead_scaled_correction']
 LOAD_FROM_CHECKPOINT = True
 
 if SANITY_EPOCHS and (LEGACY or SCORE_TEST):
@@ -201,16 +202,26 @@ sc = lambda a: (a - data.train_mean) / data.train_std
 ckpt_s2 = CHECKPOINT_DIR / 'stage2_dense_seq2seq.pt'
 require_legacy_checkpoint(ckpt_s2)
 C.set_seed()
-s2 = TidalSeq2Seq(residual_skip=SKIP, n_out=len(DENSE_NAMES) if PAD else None).to(DEVICE)
-print(f"TidalSeq2Seq parameters: {sum(p.numel() for p in s2.parameters()):,} (same class as sparse stage 2)")
-
-s2_weights = None
-if WLOSS:
+pers_mse = None
+if WLOSS or SCALED:
     # per-lead residual-persistence MSE on the TRAINING windows (scaled units), computed once
     tt = data.train_tensors
     base = tt['Ydec'][:, :len(DENSE_NAMES)] + (tt['X'][:, -1] - tt['Ua']).unsqueeze(-1)
     ok = ~tt['Flag']
     pers_mse = (((base - tt['Y']) ** 2) * ok).sum(0) / ok.sum(0)
+    del base
+
+lead_scale = None
+if SCALED:
+    lead_scale = torch.sqrt(pers_mse)
+    lead_scale = (lead_scale / lead_scale.mean()).cpu()
+    print(f"lead scale on the correction (mean 1): 10min {lead_scale[0]:.3f}, 1h {lead_scale[1]:.3f}, "
+          f"24h {lead_scale[24]:.3f}, 72h {lead_scale[-1]:.3f}")
+s2 = TidalSeq2Seq(residual_skip=SKIP, n_out=len(DENSE_NAMES) if PAD else None, lead_scale=lead_scale).to(DEVICE)
+print(f"TidalSeq2Seq parameters: {sum(p.numel() for p in s2.parameters()):,} (same class as sparse stage 2)")
+
+s2_weights = None
+if WLOSS:
     s2_weights = 1.0 / pers_mse
     s2_weights = (s2_weights / s2_weights.mean()).to(DEVICE)
     print(f"persistence loss weights (mean 1): 10min {s2_weights[0]:.2f}, 1h {s2_weights[1]:.2f}, "
@@ -228,7 +239,8 @@ training.save_checkpoint({
     'model_state_dict': s2.state_dict(),
     'config': {'model': 'TidalSeq2Seq', 'variant': VARIANT, 'flags': FLAGS, 'horizons': DENSE_HORIZONS,
                'lookback': LOOKBACK, 'lr': S2_LR, 'batch_size': S2_BATCH, 'weight_decay': 0.0,
-               'residual_skip': SKIP, 'decoder_pad_steps': PAD, 'n_out': len(DENSE_NAMES) if PAD else None},
+               'residual_skip': SKIP, 'decoder_pad_steps': PAD, 'n_out': len(DENSE_NAMES) if PAD else None,
+               'lead_scale': None if lead_scale is None else lead_scale.tolist()},
     'scaler': {'mean': data.train_mean, 'std': data.train_std},
 }, ckpt_s2, LOAD_FROM_CHECKPOINT)
 
