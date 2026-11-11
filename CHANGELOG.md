@@ -5,6 +5,13 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-11: supervisor update rewritten (neural model only)
+
+- **What:** `reports/2026-11-nov-fixes/03_supervisor_summary.md` rewritten in place (old version in git, `4d526c2`) for today's meeting: Richmond added, continuous 0 to 72h model and its two fixes, per-gauge test tables against the dissertation fixed-horizon model, tests that did not help, stage 3 leak fix, a short no-tables section on classical models, improvement ideas, questions. No classical results tables or figures.
+- **Figures:** new `models/plot_supervisor_update.py` (no training) writes `figures/<gauge>_rmse_vs_lead.png` and `figures/<gauge>_forecast_{typical,storm}.png`, neural model, harmonic and observations only. Same issue times as S3.
+- **Numbers:** every number re-read from its source CSV (listed at the foot of the report). Per-gauge tables use `dense_vs_sparse_matched.csv` (test, matched anchors: 199,319 Southend, 192,318 Richmond). The "reduced-resolution" test is the hourly (stride 6) against 10-minute harmonic fit in `utide_option_search.csv`, confirmed with Al. Richmond fault counts come from the 2026-10-12 entry, not re-derived.
+- **Test viewed:** existing test tables and single test forecasts of the frozen winner only; no development decision depends on them.
+
 ## 2026-11-10 (night): long AR explained, independent checks, AR on the water level
 
 - **What:** `reports/2026-11-nov-fixes/04_long_ar_explained.md` sets out the long AR model step by step (concept, formula, code line), with figures L1 to L3 from the new `models/plot_long_ar_figures.py` (no training).
