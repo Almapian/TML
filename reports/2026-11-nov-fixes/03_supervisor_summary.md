@@ -32,7 +32,7 @@ The dissertation model gave seven separate forecasts, at 10 min, 1h, 6h, 24h, 48
 3. Add back the harmonic prediction at every 10 minutes.
 
 **Why this is valid:**
-- The correction comes from surge and river effects, which change over hours, so a smooth curve between hourly values loses little.
+- The correction (the difference from the harmonic prediction) changes over hours rather than minutes, so a smooth curve between hourly values loses little.
 - The fast tidal rise and fall, which a curve through hourly points would distort, comes entirely from the harmonic prediction, which is exact at every 10 minutes.
 
 **Check (test, 30 minutes ahead, the point furthest from the hourly outputs):**
@@ -44,7 +44,7 @@ The dissertation model gave seven separate forecasts, at 10 min, 1h, 6h, 24h, 48
 
 ### Two faults fixed, and how the winning version was chosen
 
-**1. The neglected 10-minute lead.** The first continuous model was worse at 10 minutes than simply carrying forward the current surge ("persistence").
+**1. The neglected 10-minute lead.** The first continuous model was worse at 10 minutes than simply carrying forward the current difference from the harmonic prediction ("persistence").
 - **Cause:** training minimised the error summed over all 73 leads. Errors at 10 minutes are tiny, so that lead made up almost none of what the model was trying to reduce, and it was effectively ignored.
 - **Fix, part 1:** the model now starts from persistence and learns only a correction to it.
 - **Fix, part 2:** each lead's error is weighted by how hard that lead is for persistence. In ML terms, this is a reweighted loss function.
@@ -89,34 +89,34 @@ The dissertation model gave seven separate forecasts, at 10 min, 1h, 6h, 24h, 48
 
 ### Example forecasts
 
-Each figure shows one 72h forecast, issued at the vertical line. The lower panel is the same forecast minus the harmonic prediction, which makes the surge visible.
+Each figure shows one 72h forecast, issued at the vertical line. The lower panel is the same forecast minus the harmonic prediction, which makes the difference between forecast and observation easier to see.
 - **Typical forecasts** were chosen by rule, not by eye: of all forecasts issued at 12:00 in the test years, the one whose 72h error is the median.
-- **The surge event** is Storm Eunice, the dissertation's example date.
+- **The second example** is 17 February 2022, 12:00, the example date used in the dissertation.
 
 **Southend Pier: typical, 25 May 2023, 12:00 (72h RMSE 15.5 cm)**
 
 ![Southend typical forecast](figures/southend_forecast_typical.png)
 
-**Southend Pier: Storm Eunice, 17 February 2022, 12:00**
+**Southend Pier: 17 February 2022, 12:00 (dissertation example date)**
 
-![Southend Storm Eunice forecast](figures/southend_forecast_storm.png)
+![Southend forecast, 17 February 2022](figures/southend_forecast_20220217.png)
 
 **Richmond Lock: typical, 19 February 2024, 12:00 (72h RMSE 21.6 cm)**
 
 ![Richmond typical forecast](figures/richmond_forecast_typical.png)
 
-**Richmond Lock: Storm Eunice, 17 February 2022, 12:00**
+**Richmond Lock: 17 February 2022, 12:00 (dissertation example date)**
 
-![Richmond Storm Eunice forecast](figures/richmond_forecast_storm.png)
+![Richmond forecast, 17 February 2022](figures/richmond_forecast_20220217.png)
 
 **What to look for:**
-- The first few hours follow the observations closely. After that, the forecast settles towards a steady offset from the harmonic prediction, because the model has no weather forecast.
-- In the Richmond typical case (high river flow), low waters sit well above the harmonic prediction, and the model keeps them raised for the full 72 hours.
-- Storm Eunice brought a negative surge (observed minus harmonic) of 1.23 m at Southend and 1.76 m at Richmond, about 27 hours after issue. No model here can anticipate that without a weather forecast.
+- The first few hours follow the observations closely. After that, the forecast settles towards a steady offset from the harmonic prediction. The model has no weather inputs.
+- In the Richmond typical case, low waters sit well above the harmonic prediction, and the model keeps them raised for the full 72 hours.
+- In the 17 February 2022 example, the observed level fell 1.23 m (Southend) and 1.76 m (Richmond) below the harmonic prediction about 27 hours after issue. The forecast did not follow this.
 
 ### High and low waters
 
-**Test, forecasts issued every hour, all high and low waters within 0 to 72h**
+**Test, forecasts issued every hour, all high waters (and Southend low waters) within 0 to 72h**
 
 | | Height RMSE (cm) | Timing error, mean absolute (min) |
 |---|---|---|
@@ -133,8 +133,7 @@ Each figure shows one 72h forecast, issued at the vertical line. The lower panel
 | New model, every 10 min | **29.0** | **9.8** |
 
 - The 10-minute output cuts the timing error by about half or more compared with the hourly values alone.
-- Richmond low waters are not scored: they sit on a floor near -1.0 m ODN (only 0.05% of readings fall below -1.06 m), so their height and timing reflect that floor rather than the tide.
-- Every method still under-predicts high water at Southend (mean -8.0 cm for the new model, -13.8 cm for harmonic analysis alone).
+- Both under-predict high water at Southend (mean -8.0 cm for the new model, -13.8 cm for harmonic analysis alone).
 
 ## 4. Results per gauge
 
@@ -200,7 +199,7 @@ Both tables are test data, on the forecasts that both neural models could issue:
 ## 8. How the neural model could be improved
 
 These ideas come from the classical tests:
-- **Forecast the residual directly.** Give the network the past residual instead of the raw water level, so it does not have to separate surge from tide itself within its 16 hours. At present it sees the harmonic prediction only at the forecast times, not over its history.
+- **Forecast the residual directly.** Give the network the past residual instead of the raw water level, so it does not have to separate the residual from the tide itself within its 16 hours. At present it sees the harmonic prediction only at the forecast times, not over its history.
 - **Add a linear head.** A simple linear layer runs straight from the inputs to the outputs, alongside the LSTM, which is the network's memory component. The linear part handles the mostly linear behaviour of the residual, which the classical results suggest is much of it. The LSTM then learns only what is left, such as the tide and river interaction at Richmond.
 - **Simplify the architecture.** If much of the signal is linear, a smaller network may do as well and train faster.
 

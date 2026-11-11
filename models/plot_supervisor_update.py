@@ -9,9 +9,9 @@ Writes PNGs to reports/2026-11-nov-fixes/figures/:
                                       and the dissertation's fixed-horizon model (sparse stage 2) at its
                                       own leads, on the anchors it shares with the dense model
                                       (dense_vs_sparse_matched.csv)
-    <gauge>_forecast_{typical,storm}.png
-                                      one 72h forecast every 10 min against observations. 'storm' is
-                                      issued 2022-02-17 12:00 (Storm Eunice); 'typical' is the 12:00 issue
+    <gauge>_forecast_{typical,20220217}.png
+                                      one 72h forecast every 10 min against observations. '20220217' is
+                                      issued 2022-02-17 12:00 (the dissertation's example date); 'typical' is the 12:00 issue
                                       whose 72h RMSE is the test median (rule in plot_supervisor_figures.py)
 
 No classical models are drawn. Test data: the chosen dense model is frozen and was already scored
@@ -127,7 +127,7 @@ if __name__ == '__main__':
     for gauge in C.GAUGES:
         fig_rmse(gauge)
         s, anchors, preds, t = S.load(gauge)
-        fig_example(gauge, s, anchors, preds, t, S.ISSUE, 'storm', 'Storm Eunice')
+        fig_example(gauge, s, anchors, preds, t, S.ISSUE, '20220217', 'dissertation example date')
         typ, e = S.typical_issue(s, anchors, preds)
         print(gauge, 'typical issue', typ, f'72h RMSE {e * 100:.1f} cm')
         fig_example(gauge, s, anchors, preds, t, typ, 'typical', 'typical, median error')
