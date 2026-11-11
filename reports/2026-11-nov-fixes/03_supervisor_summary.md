@@ -6,18 +6,7 @@ RMSE is in cm throughout. Each table says which data it uses. **Validation** mea
 
 Last time you saw a results table at a handful of fixed forecast horizons. This update adds a second gauge, Richmond Lock, and a single continuous forecast from 10 minutes to 72 hours.
 
-## 2. Richmond Lock added
-
-- **Where and why.** Richmond Lock is near the upstream tidal limit of the Thames, so the tide there is strongly shaped by river flow: low waters are raised in high flow and the tide is nonlinear. It is the hard case to set against Southend, where the tide is close to linear.
-- **How hard, in one number.** Harmonic analysis alone has a test RMSE of 56.0 cm at Richmond, against 24.4 cm at Southend (averaged over the 73 lead times).
-- **Record.** 1 January 2004 to 31 December 2024 at 10-minute spacing: 1,078,071 readings, in m ODN (the gauge's chart datum minus 0.61 m).
-- **Cleaning** (`src/clean_richmond.py`):
-  - **Faults removed:** spikes, stuck-sensor readings, a datum shift in August 2009, and out-of-range values.
-  - **Short gaps** (6 hours or less) were patched with the harmonic prediction plus the residual interpolated across the gap, not the harmonic prediction alone, because river flow moves the low waters too far for a pure harmonic patch.
-  - **Longer gaps** were left as gaps.
-  - **Flagged values:** every patched value is flagged and never scored. That is 4,712 readings (0.44%).
-
-## 3. Continuous forecast (0 to 72h)
+## 2. Continuous forecast (0 to 72h)
 
 ### What the model does
 
@@ -135,7 +124,7 @@ Each figure shows one 72h forecast, issued at the vertical line. The lower panel
 - The 10-minute output cuts the timing error by about half or more compared with the hourly values alone.
 - Both under-predict high water at Southend (mean -8.0 cm for the new model, -13.8 cm for harmonic analysis alone).
 
-## 4. Results per gauge
+## 3. Results per gauge
 
 Both tables are test data, on the forecasts that both neural models could issue: 199,319 forecasts at Southend and 192,318 at Richmond. Bold marks the lower of the two neural models.
 
@@ -159,7 +148,7 @@ Both tables are test data, on the forecasts that both neural models could issue:
 - **Richmond.** Both neural models cut the harmonic error by about 40% at 72h (56.1 to 33.5 cm). The continuous model is behind the fixed-horizon model at 1h and 6h (by 2.1 and 1.7 cm), within 0.4 cm of it from 24h onwards, and better at 10 min.
 - **The gain is the continuous 10-minute output, not extra accuracy.** Accuracy is similar to the dissertation model overall.
 
-## 5. Things tested that did not help
+## 4. Things tested that did not help
 
 **Harmonic analysis settings at Richmond** (harmonic analysis on its own, before any neural model). Tried:
 - the automatic constituent selection (68 constituents, chosen by UTide's Rayleigh criterion) against the same set plus 22 shallow-water constituents (90 in all);
@@ -181,7 +170,7 @@ Both tables are test data, on the forecasts that both neural models could issue:
 | Richmond | 50.25 | 50.25 | 55.86 | 55.87 |
 | Southend | 23.63 | 23.63 | 24.68 | 24.68 |
 
-## 6. Fixes to the meteorological model
+## 5. Fixes to the meteorological model
 
 - **A future leak, now fixed.** The river discharge (and rainfall) inputs are daily values covering 09:00 to 09:00 and dated by their start. The dissertation's stage 3 model used each one from midnight of its date, which means up to 33h before the data would exist. They are now used only once available.
   - This flattered the dissertation's stage 3 results, and those results were still worse than the tide-only model. At 72h on test: Southend 24.5 against 22.7 cm, Richmond 41.2 against 36.5 cm.
@@ -189,21 +178,21 @@ Both tables are test data, on the forecasts that both neural models could issue:
 - **Stage 3 at Richmond overfits.** Its best validation score came after one pass through the training data, and it got worse after that. It reused Southend's training settings and needs its own tuning.
 - **Plan:** retrain stage 3 leak-free, scored on validation only, with settings tuned for Richmond, before adding any new meteorological data.
 
-## 7. Simpler statistical models
+## 6. Simpler statistical models
 
 - Classical linear forecasters can match or slightly beat the neural model at Southend, where the tide is close to linear.
 - In those runs, however, they were given much more information: 30 to 180 days of the harmonic residual (observed minus harmonic prediction), against 16 hours of observed water level for the neural model.
 - At Richmond the neural model stays ahead.
 - A fair, information-matched comparison is a separate piece of work I would like to pursue after this paper.
 
-## 8. How the neural model could be improved
+## 7. How the neural model could be improved
 
 These ideas come from the classical tests:
 - **Forecast the residual directly.** Give the network the past residual instead of the raw water level, so it does not have to separate the residual from the tide itself within its 16 hours. At present it sees the harmonic prediction only at the forecast times, not over its history.
 - **Add a linear head.** A simple linear layer runs straight from the inputs to the outputs, alongside the LSTM, which is the network's memory component. The linear part handles the mostly linear behaviour of the residual, which the classical results suggest is much of it. The LSTM then learns only what is left, such as the tide and river interaction at Richmond.
 - **Simplify the architecture.** If much of the signal is linear, a smaller network may do as well and train faster.
 
-## 9. Questions for you: meteorological data
+## 8. Questions for you: meteorological data
 
 - **River flow:** daily discharge arrives about 33h late. Is sub-daily river flow (for example at Kingston) worth sourcing before anything else?
 - **Wind and pressure:** both gauges currently use one ERA5 point at Southend. Would a point (or field) over the southern North Sea be more useful?
