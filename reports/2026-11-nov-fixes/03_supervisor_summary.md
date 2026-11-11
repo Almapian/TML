@@ -8,15 +8,14 @@ Last time you saw a results table at a handful of fixed forecast horizons. This 
 
 ## 2. Richmond Lock added
 
-- **Where and why.** Richmond Lock is near the upstream tidal limit of the Thames, so the tide there is strongly shaped by river flow. Low waters are raised by up to about 3 m in high flow, and the tide is nonlinear. It is the hard case to set against Southend, where the tide is close to linear.
+- **Where and why.** Richmond Lock is near the upstream tidal limit of the Thames, so the tide there is strongly shaped by river flow: low waters are raised in high flow and the tide is nonlinear. It is the hard case to set against Southend, where the tide is close to linear.
 - **How hard, in one number.** Harmonic analysis alone has a test RMSE of 56.0 cm at Richmond, against 24.4 cm at Southend (averaged over the 73 lead times).
 - **Record.** 1 January 2004 to 31 December 2024 at 10-minute spacing: 1,078,071 readings, in m ODN (the gauge's chart datum minus 0.61 m).
 - **Cleaning** (`src/clean_richmond.py`):
-  - **Faults found:** 696 spikes, 1,995 stuck-sensor readings (mostly at the chart-datum zero), a 5-day datum shift of about +3 m in August 2009 (626 readings), and 138 out-of-range values.
-  - **Short gaps** (6 hours or less) were patched with the harmonic prediction plus the residual interpolated across the gap. Pure harmonic patches would put steps of about 1 m into the record, because the river moves low water so much.
-  - **Longer gaps** were left as gaps (37 remain).
+  - **Faults removed:** spikes, stuck-sensor readings, a datum shift in August 2009, and out-of-range values.
+  - **Short gaps** (6 hours or less) were patched with the harmonic prediction plus the residual interpolated across the gap, not the harmonic prediction alone, because river flow moves the low waters too far for a pure harmonic patch.
+  - **Longer gaps** were left as gaps.
   - **Flagged values:** every patched value is flagged and never scored. That is 4,712 readings (0.44%).
-  - **Effect on usable data:** the share of usable 16-hour forecast windows rose from 67.3% to 94.1%.
 
 ## 3. Continuous forecast (0 to 72h)
 
@@ -46,14 +45,14 @@ The dissertation model gave seven separate forecasts, at 10 min, 1h, 6h, 24h, 48
 ### Two faults fixed, and how the winning version was chosen
 
 **1. The neglected 10-minute lead.** The first continuous model was worse at 10 minutes than simply carrying forward the current surge ("persistence").
-- **Cause:** training minimised the error summed over all 73 leads. Errors at 10 minutes are tiny, so that lead was only 0.064% (Southend) and 0.154% (Richmond) of what the model was trying to reduce, and it was effectively ignored.
+- **Cause:** training minimised the error summed over all 73 leads. Errors at 10 minutes are tiny, so that lead made up almost none of what the model was trying to reduce, and it was effectively ignored.
 - **Fix, part 1:** the model now starts from persistence and learns only a correction to it.
 - **Fix, part 2:** each lead's error is weighted by how hard that lead is for persistence. In ML terms, this is a reweighted loss function.
 
 **2. The edge effect at 72h.** The model's last output step has no later context, so error jumps at the final lead.
 - **Tried:** a version that runs three extra hourly steps past 72h, which are thrown away.
 
-**Selection.** Five versions were compared on validation under a rule written down before any of them was trained: the lowest average, over the 73 leads, of each lead's RMSE divided by the better of persistence and harmonic analysis. The overnight queue finished every step. One candidate (Richmond, persistence correction without weighting) finished after the selection ran. It was scored afterwards on validation (score 0.591) and does not change the winner.
+**Selection.** Five versions were compared on validation under a rule written down before any of them was trained: the lowest average, over the 73 leads, of each lead's RMSE divided by the better of persistence and harmonic analysis. The overnight queue finished every step. One candidate (Richmond, persistence correction without weighting) finished after the selection ran. It was scored afterwards on validation and does not change the winner.
 
 **Selection score (validation, lower is better)**
 
@@ -113,7 +112,7 @@ Each figure shows one 72h forecast, issued at the vertical line. The lower panel
 **What to look for:**
 - The first few hours follow the observations closely. After that, the forecast settles towards a steady offset from the harmonic prediction, because the model has no weather forecast.
 - In the Richmond typical case (high river flow), low waters sit well above the harmonic prediction, and the model keeps them raised for the full 72 hours.
-- Storm Eunice brought a negative surge of more than 1 m (Southend) and about 1.7 m (Richmond) about a day after issue. No model here can anticipate that without a weather forecast.
+- Storm Eunice brought a negative surge (observed minus harmonic) of 1.23 m at Southend and 1.76 m at Richmond, about 27 hours after issue. No model here can anticipate that without a weather forecast.
 
 ### High and low waters
 
@@ -134,7 +133,7 @@ Each figure shows one 72h forecast, issued at the vertical line. The lower panel
 | New model, every 10 min | **29.0** | **9.8** |
 
 - The 10-minute output cuts the timing error by about half or more compared with the hourly values alone.
-- Richmond low waters are not scored: they sit on a floor near -1.0 m ODN for long periods, so their height and timing reflect that floor rather than the tide.
+- Richmond low waters are not scored: they sit on a floor near -1.0 m ODN (only 0.05% of readings fall below -1.06 m), so their height and timing reflect that floor rather than the tide.
 - Every method still under-predicts high water at Southend (mean -8.0 cm for the new model, -13.8 cm for harmonic analysis alone).
 
 ## 4. Results per gauge
@@ -219,5 +218,5 @@ Sources (local, gitignored outputs, listed for traceability):
 - **10-minute and high-water results:** `.../postprocess/test_rmse_433_leads.csv` and `test_high_low_water.csv`.
 - **Harmonic settings:** `outputs/<gauge>/utide_search/utide_option_search.csv`.
 - **Stage 3:** `outputs/[richmond/]stage3_outputs/stage3_metrics.csv` and `outputs/diagnostics_2026-11/B_ablation_val_rmse.csv`.
-- **Richmond cleaning:** `CHANGELOG.md` (2026-10-12) and `Data/richmond_lock_data.csv`.
+- **Richmond record:** `Data/richmond_lock_data.csv`.
 - **Figures:** `models/plot_supervisor_update.py`.
