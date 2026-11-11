@@ -62,6 +62,26 @@ def from_env(name, default, cast=str):
     return None if raw.strip().lower() == 'none' else cast(raw)
 
 
+def _physical_cores():
+    """Physical core count (psutil), falling back to the logical count if psutil is missing."""
+    try:
+        import psutil
+        n = psutil.cpu_count(logical=False)
+    except ImportError:
+        n = None
+    return n or os.cpu_count() or 1
+
+
+# CPU threads for torch: physical cores (8 on the Core Ultra 7 258V). Override with
+# TIDAL_NUM_THREADS. Applied by describe_device(), which every training script calls first.
+NUM_THREADS = from_env('TIDAL_NUM_THREADS', _physical_cores(), int)
+
+
+def configure_threads(n=None):
+    torch.set_num_threads(NUM_THREADS if n is None else n)
+    return torch.get_num_threads()
+
+
 def gauge_info(gauge):
     if gauge not in GAUGES:
         raise ValueError(f"unknown gauge {gauge!r}; choose one of {list(GAUGES)}")
@@ -76,6 +96,7 @@ def get_device():
 def describe_device(device=None):
     device = get_device() if device is None else device
     print(f"PyTorch version: {torch.__version__}")
+    print(f"CPU threads:     {configure_threads()}")
     print(f"CUDA available:  {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"GPU:             {torch.cuda.get_device_name(0)}")
@@ -144,6 +165,59 @@ DENSE_TAIL_DAYS = []
 DENSE_TAIL_LOSS_SHARE = 0.5
 DENSE_PAD_STEPS = 3          # decoder points after the last target, as stage 3 pads past 30d
 
+# Dense variants. Each one is a directory name under outputs/[<gauge>/] and
+# models/checkpoints/[<gauge>/], picked with run_gauge.py --variant (env TIDAL_DENSE_VARIANT).
+# A variant trains from scratch and only ever resumes from its own directories. The
+# original model, DENSE_LEGACY_VARIANT, is the comparison baseline: it is never retrained,
+# only loaded from its existing checkpoints and scored.
+DENSE_LEGACY_VARIANT = 'dense'
+DENSE_VARIANT = DENSE_LEGACY_VARIANT
+DENSE_VARIANT_PATTERN = r'dense(_[a-z0-9]+)*'
+
+
+# What each dense variant changes. Every flag defaults to off (= the legacy model); a variant
+# changes ONE thing about the stage 2 model relative to 'dense' so its result can be attributed
+# (train_stage3 only decides whether the unchanged stage 3 tide-only model is retrained).
+#   residual_skip      stage 2 output = residual persistence + network correction
+#   decoder_pad_steps  extra hourly UTide steps after 72h, excluded from loss and scoring
+#   lead_scaled_correction  with residual_skip: the network correction at lead k is multiplied
+#                      by that lead's training residual-persistence RMSE / its mean over leads
+#                      (fixed, computed once); the loss is unchanged
+#   long_memory_days   extra input: daily-mean UTide residual for that many days before the
+#                      anchor day (+ missing flags), into the decoder's initial state
+#   persistence_loss_weights  each lead's squared error divided by that lead's
+#                      residual-persistence MSE on the training set (normalised to mean 1)
+#   train_stage3       also (re)train the dense stage 3 tide-only model. The v2 variants only
+#                      change stage 2, so retraining stage 3 would just repeat the legacy model.
+DENSE_VARIANT_DEFAULTS = {'residual_skip': False, 'decoder_pad_steps': 0,
+                          'persistence_loss_weights': False, 'lead_scaled_correction': False,
+                          'long_memory_days': 0,
+                          'train_stage3': True}
+DENSE_VARIANTS = {
+    'dense': {},
+    'dense_v2_skip': {'residual_skip': True, 'train_stage3': False},
+    'dense_v2_pad': {'decoder_pad_steps': 3, 'train_stage3': False},
+    'dense_v2_skip_wloss': {'residual_skip': True, 'persistence_loss_weights': True, 'train_stage3': False},
+    'dense_v2_skip_scaled': {'residual_skip': True, 'lead_scaled_correction': True, 'train_stage3': False},
+    'dense_v2_skip_longmem': {'residual_skip': True, 'long_memory_days': 30, 'train_stage3': False},
+}
+
+
+def dense_variant_flags(name):
+    """The full flag set for a registered dense variant."""
+    if name not in DENSE_VARIANTS:
+        raise ValueError(f"dense variant {name!r} is not registered in config.DENSE_VARIANTS ({list(DENSE_VARIANTS)})")
+    return {**DENSE_VARIANT_DEFAULTS, **DENSE_VARIANTS[name]}
+
+
+def dense_variant(name=None):
+    """Validate a dense variant name (default: env TIDAL_DENSE_VARIANT, else DENSE_VARIANT)."""
+    import re
+    name = from_env('TIDAL_DENSE_VARIANT', DENSE_VARIANT) if name is None else name
+    if not re.fullmatch(DENSE_VARIANT_PATTERN, name):
+        raise ValueError(f"dense variant {name!r} must match {DENSE_VARIANT_PATTERN!r}, e.g. 'dense_v2_skip'")
+    return name
+
 
 def dense_stage3_decoder(tail_days=None):
     """(horizons, decoder_seq_steps, target_slice) for the dense stage-3 decoder: a leading
@@ -175,6 +249,13 @@ DAILY_GRID_BUFFER_DAYS = 40  # daily meteo grid buffer, same reason
 # --- stage 3 branch lookbacks ---
 METEO_LOOKBACK_HOURS = 120   # 5 days; EDA/meteo_eda.ipynb s.2.3: pressure ACF < 0.2 by ~121h
 RIVER_LOOKBACK_DAYS = 30     # comfortably longer than the ~2-day rainfall -> discharge lag
+# NRFA daily values are water-day means, 09:00 to 09:00 GMT, dated by the day they start, so
+# the value dated D is only complete at 09:00 on D+1. An anchor may use the value dated D only
+# from D + RIVER_AVAILABILITY_LAG_HOURS (33h after 00:00 on D). 0 reproduces the original
+# calendar-day mapping, which leaked up to 33h of future river data; every checkpoint trained
+# before 2026-11-09 used 0, so pass river_lag_hours=0 to reproduce them exactly.
+RIVER_AVAILABILITY_LAG_HOURS = 33
+LEGACY_RIVER_LAG_HOURS = 0
 
 # --- classical baselines: models/identify_baselines.py, search_baselines.py, eval_baselines.py ---
 # Starting search ranges; models/identify_baselines.py can widen them per gauge and track

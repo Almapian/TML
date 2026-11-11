@@ -17,7 +17,7 @@ import utide
 
 from .. import paths
 from .config import (DAILY_GRID_BUFFER_DAYS, GAUGE_USECOLS, LOOKBACK, METEO_LOOKBACK_HOURS,
-                     RIVER_LOOKBACK_DAYS, SITE_LAT, STEP, TRAIN_END, TRAIN_STRIDE, UTIDE_EXT_DAYS,
+                     RIVER_AVAILABILITY_LAG_HOURS, RIVER_LOOKBACK_DAYS, SITE_LAT, STEP, TRAIN_END, TRAIN_STRIDE, UTIDE_EXT_DAYS,
                      VAL_END, gauge_info)
 from .windowing import MeteoGrids, build_windows, build_windows_multi, build_windows_stage3
 
@@ -196,7 +196,7 @@ class Stage2Data:
     test_df: pd.DataFrame
     coef: object
     X_test: np.ndarray
-    Ydec_test: np.ndarray
+    Ydec_test: np.ndarray          # UTide at the target times (never padded): the UTide comparator
     Y_test: np.ndarray
     Flag_test: np.ndarray
     Time_test: np.ndarray
@@ -208,14 +208,69 @@ class Stage2Data:
     train_tensors_flat: dict
     val_tensors_flat: dict
     test_tensors_flat: dict
+    Ua_test: np.ndarray = None     # UTide at each test anchor (dense v2)
+    utide_full: np.ndarray = None  # regular-grid reconstruction for decoder padding (dense v2)
+    utide_start: np.datetime64 = None
+    daily_residual: dict = None    # long-memory input: daily-mean UTide residual over the record
+
+
+LONG_MEMORY_MIN_ROWS = 72      # a day needs at least half its 144 unflagged 10-min rows
+
+
+def daily_residual_series(df):
+    """Daily mean of observed - UTide (train-only fit) over the whole record, from unflagged rows.
+    Days with fewer than LONG_MEMORY_MIN_ROWS rows are marked missing. Computed once; each window
+    then only gathers its 30 numbers from it."""
+    ok = ~df['is_flagged'].to_numpy()
+    day = df['DateTime'].to_numpy().astype('datetime64[D]')[ok]
+    resid = (df['Observed_ODN'].to_numpy(np.float64) - df['utide_recon'].to_numpy(np.float64))[ok]
+    start = day.min()
+    idx = (day - start).astype(np.int64)
+    n_days = int(idx.max()) + 1
+    count = np.bincount(idx, minlength=n_days)
+    total = np.bincount(idx, weights=resid, minlength=n_days)
+    valid = count >= LONG_MEMORY_MIN_ROWS
+    mean = np.where(valid, total / np.maximum(count, 1), 0.0)
+    return {'start': start, 'mean': mean.astype(np.float32), 'valid': valid}
+
+
+def long_memory_features(anchor_time, daily, n_days, scale):
+    """(N, n_days, 2): the daily-mean residual (divided by `scale`, 0 where missing) and a missing
+    flag, for the n_days complete calendar days BEFORE each anchor's own day, oldest first. Only
+    days that have fully ended before the anchor are used, so nothing at or after it leaks in."""
+    a_day = (np.asarray(anchor_time).astype('datetime64[D]') - daily['start']).astype(np.int64)
+    idx = a_day[:, None] - np.arange(n_days, 0, -1)[None, :]          # D-n .. D-1
+    inside = (idx >= 0) & (idx < len(daily['mean']))
+    safe = np.clip(idx, 0, len(daily['mean']) - 1)
+    valid = inside & daily['valid'][safe]
+    value = np.where(valid, daily['mean'][safe] / scale, 0.0)
+    return np.stack([value, (~valid).astype(np.float32)], axis=-1).astype(np.float32)
+
+
+def pad_utide(time_matrix, horizon_steps, pad_steps, utide_full, utide_start):
+    """UTide at `pad_steps` extra decoder points after the last target, spaced like the last
+    two targets (hourly for the dense grid), taken from a gap-free reconstruction so the set
+    of anchors is exactly the unpadded one. Returns (N, pad_steps) float32."""
+    spacing = horizon_steps[-1] - horizon_steps[-2]
+    anchor = time_matrix[:, 0] - np.timedelta64(int(horizon_steps[0]) * 10, 'm')
+    idx = ((anchor - utide_start) / np.timedelta64(10, 'm')).astype(np.int64)
+    offsets = horizon_steps[-1] + spacing * np.arange(1, pad_steps + 1)
+    assert idx.min() >= 0 and idx.max() + offsets.max() < len(utide_full), 'utide grid too short for padding'
+    return utide_full[idx[:, None] + offsets[None, :]].astype(np.float32), idx
 
 
 def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_STRIDE,
-                   data_path=None, verbose=True, gauge='southend', utide_fit_stride=None):
+                   data_path=None, verbose=True, gauge='southend', utide_fit_stride=None,
+                   with_anchor_utide=False, decoder_pad_steps=0, long_memory_days=0):
     """Stage 2: UTide fit on train only, reconstructed across the full span and used both
     as the decoder input feature and as the standalone UTide comparator.
 
-    `utide_fit_stride=None` uses the gauge's default from config.GAUGES."""
+    `utide_fit_stride=None` uses the gauge's default from config.GAUGES.
+    Dense v2 options (both off by default, which reproduces the original tensors exactly):
+      with_anchor_utide  add 'Ua' (UTide at the anchor, scaled) to every tensor dict
+      decoder_pad_steps  append that many UTide points after the last target to 'Ydec'
+                         (decoder input only; Ydec_test stays at the targets)
+      long_memory_days   add 'Lm' (N, days, 2): daily-mean residuals before the anchor day."""
     info = gauge_info(gauge)
     stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
     df = load_gauge_df(data_path or info['csv'], verbose=verbose)
@@ -227,17 +282,37 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
 
     train_df, val_df, test_df = split_chronological(df, verbose=verbose)
 
-    X_train, Ydec_train, Y_train, Flag_train, _ = build_windows_multi(train_df, lookback, horizon_steps)
-    X_val, Ydec_val, Y_val, Flag_val, _ = build_windows_multi(val_df, lookback, horizon_steps)
-    X_test, Ydec_test, Y_test, Flag_test, Time_test = build_windows_multi(test_df, lookback, horizon_steps)
+    def _windows(split_df):
+        return build_windows_multi(split_df, lookback, horizon_steps, return_anchor_utide=True)
 
-    X_train, Ydec_train, Y_train, Flag_train = (
+    X_train, Ydec_train, Y_train, Flag_train, T_train, Ua_train = _windows(train_df)
+    X_val, Ydec_val, Y_val, Flag_val, T_val, Ua_val = _windows(val_df)
+    X_test, Ydec_test, Y_test, Flag_test, Time_test, Ua_test = _windows(test_df)
+
+    X_train, Ydec_train, Y_train, Flag_train, T_train, Ua_train = (
         X_train[::train_stride], Ydec_train[::train_stride],
         Y_train[::train_stride], Flag_train[::train_stride],
+        T_train[::train_stride], Ua_train[::train_stride],
     )
     if verbose:
         print(f"windows -> train: {X_train.shape} (stride {train_stride}), "
               f"val: {X_val.shape}, test: {X_test.shape}")
+
+    utide_full = utide_start = None
+    Ydec_in = {'train': Ydec_train, 'val': Ydec_val, 'test': Ydec_test}
+    if decoder_pad_steps:
+        grid = pd.date_range(df['DateTime'].min(), df['DateTime'].max() + pd.Timedelta(days=2), freq='10min')
+        utide_full = reconstruct_utide(grid, coef)
+        utide_start = grid[0].to_numpy()
+        for name, T_, Yd_ in (('train', T_train, Ydec_train), ('val', T_val, Ydec_val), ('test', Time_test, Ydec_test)):
+            pad, idx = pad_utide(T_, horizon_steps, decoder_pad_steps, utide_full, utide_start)
+            # the gap-free grid must reproduce the per-row reconstruction at the real targets
+            check = utide_full[idx[:2000, None] + np.asarray(horizon_steps)[None, :]]
+            assert np.allclose(check, Yd_[:2000], atol=1e-5), f'{name}: padding grid misaligned with targets'
+            Ydec_in[name] = np.concatenate([Yd_, pad], axis=1)
+        if verbose:
+            print(f"decoder padding: {decoder_pad_steps} UTide steps after the last target "
+                  f"(decoder length {Ydec_in['train'].shape[1]})")
 
     train_mean = float(train_df['Observed_ODN'].mean())
     train_std = float(train_df['Observed_ODN'].std())
@@ -247,24 +322,38 @@ def prepare_stage2(device, horizon_steps, lookback=LOOKBACK, train_stride=TRAIN_
     def sc(a):
         return (a - train_mean) / train_std
 
-    train_tensors = {'X': to_tensor(sc(X_train), device), 'Ydec': to_tensor(sc(Ydec_train), device),
+    train_tensors = {'X': to_tensor(sc(X_train), device), 'Ydec': to_tensor(sc(Ydec_in['train']), device),
                      'Y': to_tensor(sc(Y_train), device),
                      'Flag': to_tensor(Flag_train, device, dtype=torch.bool)}
-    val_tensors = {'X': to_tensor(sc(X_val), device), 'Ydec': to_tensor(sc(Ydec_val), device),
+    val_tensors = {'X': to_tensor(sc(X_val), device), 'Ydec': to_tensor(sc(Ydec_in['val']), device),
                    'Y': to_tensor(sc(Y_val), device),
                    'Flag': to_tensor(Flag_val, device, dtype=torch.bool)}
-    test_tensors = {'X': to_tensor(sc(X_test), device), 'Ydec': to_tensor(sc(Ydec_test), device)}
+    test_tensors = {'X': to_tensor(sc(X_test), device), 'Ydec': to_tensor(sc(Ydec_in['test']), device)}
+    if with_anchor_utide:
+        train_tensors['Ua'] = to_tensor(sc(Ua_train), device)
+        val_tensors['Ua'] = to_tensor(sc(Ua_val), device)
+        test_tensors['Ua'] = to_tensor(sc(Ua_test), device)
+    daily = None
+    if long_memory_days:
+        daily = daily_residual_series(df)
+        for tensors, T_ in ((train_tensors, T_train), (val_tensors, T_val), (test_tensors, Time_test)):
+            anchor = T_[:, 0] - np.timedelta64(int(horizon_steps[0]) * 10, 'm')
+            tensors['Lm'] = to_tensor(long_memory_features(anchor, daily, long_memory_days, train_std), device)
+        if verbose:
+            print(f"long memory: {long_memory_days} daily-mean residuals before the anchor day; "
+                  f"{100 * (1 - daily['valid'].mean()):.1f}% of record days missing")
 
     # the flat stage-1 comparators take no decoder input
-    train_tensors_flat = {k: v for k, v in train_tensors.items() if k != 'Ydec'}
-    val_tensors_flat = {k: v for k, v in val_tensors.items() if k != 'Ydec'}
+    train_tensors_flat = {k: v for k, v in train_tensors.items() if k not in ('Ydec', 'Ua', 'Lm')}
+    val_tensors_flat = {k: v for k, v in val_tensors.items() if k not in ('Ydec', 'Ua', 'Lm')}
     test_tensors_flat = {'X': test_tensors['X']}
 
     return Stage2Data(df, train_df, val_df, test_df, coef,
                       X_test, Ydec_test, Y_test, Flag_test, Time_test,
                       train_mean, train_std,
                       train_tensors, val_tensors, test_tensors,
-                      train_tensors_flat, val_tensors_flat, test_tensors_flat)
+                      train_tensors_flat, val_tensors_flat, test_tensors_flat,
+                      Ua_test, utide_full, utide_start, daily)
 
 
 def prepare_stage2_reduced(device, df, train_start, horizon_steps, lookback=LOOKBACK,
@@ -342,7 +431,8 @@ def load_meteo(meteo_dir=None, verbose=True, site='Southend Pier'):
 
 def build_meteo_grids(df, pressure, wind, rainfall, discharge, train_end=TRAIN_END,
                       meteo_lookback_hours=METEO_LOOKBACK_HOURS,
-                      river_lookback_days=RIVER_LOOKBACK_DAYS, verbose=True):
+                      river_lookback_days=RIVER_LOOKBACK_DAYS, river_lag_hours=RIVER_AVAILABILITY_LAG_HOURS,
+                      verbose=True):
     """Hourly pressure/wind and daily rainfall/discharge on complete grids.
 
     Rainfall stops 2023-12-31 and discharge 2024-09-30 (both inside the test split); the
@@ -399,6 +489,7 @@ def build_meteo_grids(df, pressure, wind, rainfall, discharge, train_end=TRAIN_E
         discharge_avail=disc_avail_s.to_numpy(dtype=np.float32),
         meteo_lookback_hours=meteo_lookback_hours,
         river_lookback_days=river_lookback_days,
+        river_lag_hours=river_lag_hours,
     )
 
 
@@ -433,16 +524,21 @@ class Stage3Data:
 
 def prepare_stage3(device, horizon_steps, decoder_seq_steps, target_slice, lookback=LOOKBACK,
                    train_stride=TRAIN_STRIDE, data_path=None, meteo_dir=None, verbose=True,
-                   gauge='southend', utide_fit_stride=None):
+                   gauge='southend', utide_fit_stride=None, river_lag_hours=None):
     """Stage 3: multi-resolution windows (tide 10-min, meteo hourly, river daily) plus the
     padded UTide decoder sequence, all scaled with train-split statistics.
 
-    `utide_fit_stride=None` uses the gauge's default from config.GAUGES."""
+    `utide_fit_stride=None` uses the gauge's default from config.GAUGES. `river_lag_hours=None`
+    uses config.RIVER_AVAILABILITY_LAG_HOURS (no leakage); pass config.LEGACY_RIVER_LAG_HOURS (0)
+    to reproduce checkpoints trained before 2026-11-09."""
     info = gauge_info(gauge)
     stride = info['utide_fit_stride'] if utide_fit_stride is None else utide_fit_stride
+    lag = RIVER_AVAILABILITY_LAG_HOURS if river_lag_hours is None else river_lag_hours
     df = load_gauge_df(data_path or info['csv'], verbose=verbose)
     pressure, wind, rainfall, discharge = load_meteo(meteo_dir, verbose=verbose, site=info['meteo_site'])
-    grids = build_meteo_grids(df, pressure, wind, rainfall, discharge, verbose=verbose)
+    grids = build_meteo_grids(df, pressure, wind, rainfall, discharge, river_lag_hours=lag, verbose=verbose)
+    print(f"river inputs: the value dated D is used from {lag}h after 00:00 on D"
+          f"{'  (LEGACY calendar-day mapping, leaks future river data)' if lag == 0 else ''}")
 
     coef = fit_utide(df, end=TRAIN_END, lat=info['lat'], stride=stride, verbose=verbose)
     utide_index = pd.date_range(df['DateTime'].min(),

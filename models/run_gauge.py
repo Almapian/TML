@@ -2,13 +2,17 @@
 
     python models/run_gauge.py                                   # main pipeline, GAUGE below
     python models/run_gauge.py --pipeline dense --gauge richmond --gauge southend
+    python models/run_gauge.py --pipeline dense --variant dense_v2_skip --gauge richmond
+    python models/run_gauge.py --pipeline dense --variant dense_v2_skip --score-test --gauge richmond
 
 Each step runs as its own process, with TIDAL_GAUGE / TIDAL_MAX_HORIZON_H passed to every
 script. Four pipelines:
 
     main       data cleaning (only if the gauge's cleaned CSV doesn't exist yet), then
                train_stage2 -> plot_stage2 -> train_stage3 -> plot_stage3 -> train_stage1 -> plot_stage1
-    dense      train_dense -> plot_dense (continuous 0-72h forecasts; see models/train_dense.py)
+    dense      train_dense (continuous 0-72h forecasts; see models/train_dense.py), scored on
+               validation only. With --score-test it also scores test and then runs plot_dense
+               (whose figures are test results). Use --score-test only for final numbers.
     baselines  identify_baselines -> search_baselines
                (classical comparators, validation only; stops so edge winners get reviewed)
     baselines_eval  eval_baselines -> plot_baselines
@@ -25,7 +29,8 @@ saved to outputs/_resume/). A step that fails MAX_RETRIES + 1 times in a row sto
 since that is a bug rather than a crash, and its log says why.
 
 Re-launching. Completed steps are recorded in logs/<gauge>/run_state.json (main) or
-logs/<gauge>/dense/run_state.json (dense) and skipped on the next launch, so after a
+logs/<gauge>/<variant>/run_state_{val,test}.json (dense; the variant defaults to 'dense',
+and validation and test-scoring runs are tracked separately) and skipped on the next launch, so after a
 reboot (or a stop) just run the same command again. Delete that file, or pass --redo, to
 redo every step.
 
@@ -101,10 +106,13 @@ def keep_awake(on):
     ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | (ES_SYSTEM_REQUIRED if on else 0))
 
 
-def log_dir(gauge, pipeline):
-    """logs/<gauge>/ for the main pipeline (as before), logs/<gauge>/<pipeline>/ otherwise."""
+def log_dir(gauge, pipeline, variant=None):
+    """logs/<gauge>/ for the main pipeline (as before), logs/<gauge>/<pipeline>/ otherwise,
+    and logs/<gauge>/<variant>/ for the dense pipeline (the legacy variant is 'dense')."""
     base = REPO_ROOT / 'logs' / gauge
-    return paths.ensure_dir(base if pipeline == 'main' else base / pipeline)
+    if pipeline == 'main':
+        return paths.ensure_dir(base)
+    return paths.ensure_dir(base / (variant if pipeline == 'dense' else pipeline))
 
 
 def load_state(state_path, skip_completed):
@@ -117,12 +125,12 @@ def save_state(state_path, state):
     state_path.write_text(json.dumps(state, indent=2), encoding='utf-8')
 
 
-def run_step(gauge, name, script, logs):
+def run_step(gauge, name, script, logs, extra_env):
     """Run one script as a child process, streaming its output to console + log.
     Returns the exit code."""
     env = dict(os.environ, TIDAL_GAUGE=gauge,
                TIDAL_MAX_HORIZON_H='none' if MAX_HORIZON_H is None else str(MAX_HORIZON_H),
-               PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1', MPLBACKEND='Agg')
+               PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1', MPLBACKEND='Agg', **extra_env)
     log_path = logs / f'{name}.log'
     with open(log_path, 'a', encoding='utf-8') as log:
         log.write(f"\n===== {name}: attempt started {datetime.now():%Y-%m-%d %H:%M:%S} =====\n")
@@ -138,11 +146,11 @@ def run_step(gauge, name, script, logs):
     return code
 
 
-def run_with_retries(gauge, name, script, logs):
+def run_with_retries(gauge, name, script, logs, extra_env):
     for attempt in range(1, MAX_RETRIES + 2):
         t0 = time.time()
         print(f"\n>>> [{gauge}] {name} (attempt {attempt}/{MAX_RETRIES + 1})", flush=True)
-        code = run_step(gauge, name, script, logs)
+        code = run_step(gauge, name, script, logs, extra_env)
         minutes = (time.time() - t0) / 60
         if code == 0:
             print(f">>> [{gauge}] {name} finished in {minutes:.1f} min", flush=True)
@@ -156,14 +164,20 @@ def run_with_retries(gauge, name, script, logs):
     return False
 
 
-def run_gauge(gauge, pipeline, skip_completed):
+def run_gauge(gauge, pipeline, skip_completed, variant, score_test):
     """Every step of `pipeline` for one gauge. Returns False if a step gave up."""
     info = C.gauge_info(gauge)
-    logs = log_dir(gauge, pipeline)
-    state_path = logs / 'run_state.json'
+    logs = log_dir(gauge, pipeline, variant)
+    extra_env = {'TIDAL_DENSE_VARIANT': variant, 'TIDAL_SCORE_TEST': '1' if score_test else '0'}
+    if pipeline == 'dense':   # validation and test-scoring runs are tracked separately
+        state_path = logs / f"run_state_{'test' if score_test else 'val'}.json"
+    else:
+        state_path = logs / 'run_state.json'
     print(f"\n===== gauge: {info['label']}  |  pipeline: {pipeline}  |  logs: {logs}")
 
     steps = list(PIPELINES[pipeline])
+    if pipeline == 'dense' and not score_test:
+        steps = [s for s in steps if s[0] != 'plot_dense']   # its figures are test results
     if pipeline == 'main' and gauge in CLEANING_SCRIPTS and not info['csv'].exists():
         steps.insert(0, ('clean_data', CLEANING_SCRIPTS[gauge]))
 
@@ -172,7 +186,7 @@ def run_gauge(gauge, pipeline, skip_completed):
         if name in state['completed']:
             print(f">>> [{gauge}] {name}: already completed in an earlier launch -- skipping")
             continue
-        if not run_with_retries(gauge, name, script, logs):
+        if not run_with_retries(gauge, name, script, logs, extra_env):
             print(f"\n>>> run stopped at {gauge} / {name}: it failed {MAX_RETRIES + 1} times in a row. "
                   f"Fix the error in its log, then re-launch -- completed steps are skipped.")
             return False
@@ -188,16 +202,25 @@ if __name__ == '__main__':
     parser.add_argument('--gauge', action='append', choices=list(C.GAUGES),
                         help='repeatable; runs in the order given (default: CONFIG GAUGE)')
     parser.add_argument('--redo', action='store_true', help='ignore run_state.json and redo every step')
+    parser.add_argument('--variant', default=C.DENSE_VARIANT,
+                        help=f"dense pipeline only: output/checkpoint directory name (default {C.DENSE_VARIANT!r}, "
+                             f"the legacy model, which is score-only)")
+    parser.add_argument('--score-test', action='store_true',
+                        help='dense pipeline only: also score the TEST split (final numbers only; '
+                             'record it in CHANGELOG.md). Default: validation only.')
     args, _ = parser.parse_known_args()   # tolerate IPython/VS Code's own arguments
     gauges = args.gauge or [GAUGE]
+    variant = C.dense_variant(args.variant)
+    if args.score_test and args.pipeline != 'dense':
+        parser.error('--score-test applies to the dense pipeline only (baselines_eval is the baselines test step)')
 
-    print(f"pipeline: {args.pipeline}  |  gauges: {', '.join(gauges)}  |  plot cap: {MAX_HORIZON_H}h  "
+    print(f"pipeline: {args.pipeline}  |  variant: {variant}  |  score test: {args.score_test}  |  gauges: {', '.join(gauges)}  |  plot cap: {MAX_HORIZON_H}h  "
           f"|  python: {PYTHON}")
     keep_awake(True)
     run_start = time.time()
     try:
         for gauge in gauges:
-            if not run_gauge(gauge, args.pipeline, SKIP_COMPLETED and not args.redo):
+            if not run_gauge(gauge, args.pipeline, SKIP_COMPLETED and not args.redo, variant, args.score_test):
                 sys.exit(1)
     finally:
         keep_awake(False)

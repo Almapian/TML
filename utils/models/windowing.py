@@ -45,9 +45,12 @@ def build_windows(sub_df, lookback):
     return X, y, flag, time
 
 
-def build_windows_multi(sub_df, lookback, horizon_steps):
+def build_windows_multi(sub_df, lookback, horizon_steps, return_anchor_utide=False):
     """Stage 2: (X, Ydec, Y, Flag, Time), one target and one UTide decoder feature per
     horizon. Requires a `utide_recon` column alongside `Observed_ODN`.
+
+    With `return_anchor_utide`, also returns Uanc: UTide at each window's anchor, the time of
+    its last encoder value X[:, -1] (used by the dense v2 residual-persistence skip).
     """
     sub_df = sub_df.reset_index(drop=True)
     is_gap = sub_df['DateTime'].diff() > STEP
@@ -61,7 +64,7 @@ def build_windows_multi(sub_df, lookback, horizon_steps):
     max_h = max(horizon_steps)
     horizon_arr = np.array(horizon_steps)
 
-    X_list, Ydec_list, Y_list, Flag_list, Time_list = [], [], [], [], []
+    X_list, Ydec_list, Y_list, Flag_list, Time_list, Uanc_list = [], [], [], [], [], []
     for seg in np.unique(seg_id):
         idx = np.where(seg_id == seg)[0]
         n = len(idx)
@@ -70,6 +73,8 @@ def build_windows_multi(sub_df, lookback, horizon_steps):
 
         seg_values = values[idx]
         seg_utide = utide_vals[idx]
+        if return_anchor_utide:
+            Uanc_list.append(seg_utide[lookback - 1:lookback - 1 + n - lookback - max_h + 1])
         seg_flag = flagged[idx]
         seg_time = times[idx]
 
@@ -91,6 +96,8 @@ def build_windows_multi(sub_df, lookback, horizon_steps):
     Y = np.concatenate(Y_list, axis=0)
     Flag = np.concatenate(Flag_list, axis=0)
     Time = np.concatenate(Time_list, axis=0)
+    if return_anchor_utide:
+        return X, Ydec, Y, Flag, Time, np.concatenate(Uanc_list, axis=0)
     return X, Ydec, Y, Flag, Time
 
 
@@ -111,6 +118,17 @@ class MeteoGrids:
     discharge_avail: np.ndarray
     meteo_lookback_hours: int
     river_lookback_days: int
+    river_lag_hours: int = 0     # see config.RIVER_AVAILABILITY_LAG_HOURS
+
+
+def river_day_index(anchor_time, daily_start, river_lag_hours):
+    """Index into the daily river grid of the latest value an anchor may use: the value dated
+    D becomes usable `river_lag_hours` after 00:00 on D (33h for NRFA's 09:00-09:00 GMT water
+    day; 0 = the original calendar-day mapping)."""
+    usable = np.asarray(anchor_time) - np.timedelta64(int(river_lag_hours), 'h')
+    return np.floor(
+        (usable.astype('datetime64[D]') - np.datetime64(daily_start, 'D')) / np.timedelta64(1, 'D')
+    ).astype(np.int64)
 
 
 def gather_window(full_arr, end_idx, length):
@@ -180,9 +198,7 @@ def build_windows_stage3(sub_df, lookback, horizon_steps, grids, utide_full, uti
     Ydec_dense = utide_full[anchor_utide_idx[:, None] + dec_offsets[None, :]]
 
     anchor_hourly_idx = np.floor((anchor_time - grids.hourly_start) / np.timedelta64(1, 'h')).astype(np.int64)
-    anchor_daily_idx = np.floor(
-        (anchor_time.astype('datetime64[D]') - grids.daily_start.astype('datetime64[D]')) / np.timedelta64(1, 'D')
-    ).astype(np.int64)
+    anchor_daily_idx = river_day_index(anchor_time, grids.daily_start, grids.river_lag_hours)
 
     valid = ((anchor_hourly_idx - (grids.meteo_lookback_hours - 1) >= 0)
              & (anchor_daily_idx - (grids.river_lookback_days - 1) >= 0))

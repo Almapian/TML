@@ -42,5 +42,4 @@ venv/
 .cdsapirc
 *.env
 
-CLAUDE.md
 claude-code-prompts.md

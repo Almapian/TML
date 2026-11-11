@@ -1,6 +1,9 @@
 """Figures for the dense (continuous 0-72h) pipeline. Reads tables only -- no training.
 
-    python models/plot_dense.py      # after models/train_dense.py, for the same GAUGE
+    python models/plot_dense.py      # after models/train_dense.py, for the same GAUGE and variant
+
+A variant other than the legacy 'dense' reads its own output directory and adds _<variant>
+to the figure names, so the original figures are never overwritten.
 
 Two figures per gauge, as 300-dpi PNG in report_images/ (suffix _<gauge> for non-Southend):
 
@@ -41,9 +44,11 @@ GAUGE = C.from_env('TIDAL_GAUGE', 'southend')
 SMOKE = C.from_env('TIDAL_SMOKE', '0').strip().lower() not in ('', '0', 'false')
 LEADS = list(C.STAGE1_ROLLOUT_HORIZONS)            # 10min, 1h, 6h, 24h, 48h
 
-DENSE_DIR = pathlib.Path(str(paths.dense_output_dir(GAUGE)) + ('_smoke' if SMOKE else ''))
+VARIANT = C.dense_variant()
+DENSE_DIR = pathlib.Path(str(paths.dense_output_dir(GAUGE, VARIANT)) + ('_smoke' if SMOKE else ''))
 set_report_dir(str(DENSE_DIR if SMOKE else paths.ensure_dir(paths.REPORT_IMAGES_DIR)))
-set_name_suffix(figure_suffix(GAUGE))
+set_name_suffix('_'.join(p for p in (figure_suffix(GAUGE),
+                                     None if VARIANT == C.DENSE_LEGACY_VARIANT else VARIANT) if p))
 LABEL = C.gauge_info(GAUGE)['label']
 
 FAMILY = {'UTide': '#52514e', 'stage1': '#2a78d6', 'stage2': '#eb6834', 'stage3': '#1baf7a'}
@@ -76,6 +81,8 @@ tables = {
     'stage3': long(pd.read_csv(paths.stage_output_dir(3, GAUGE) / 'stage3_metrics.csv')),
     'dense': long(pd.read_csv(DENSE_DIR / 'dense_metrics.csv')),
 }
+# a variant that retrains only stage 2 has no dense stage 3 rows: drop what its table lacks
+ROWS = [r for r in ROWS if r[5] in tables[r[4]].index]
 grid = pd.DataFrame([[tables[src].loc[name, lead] for lead in LEADS] for _, _, _, _, src, name in ROWS],
                     index=[r[0] for r in ROWS], columns=LEADS)
 grid.index.name = 'model'
@@ -104,7 +111,9 @@ for ax, lead in zip(axes, LEADS):
     ax.set_title(lead, fontsize=10)
     ax.grid(axis='y', visible=False)
     ax.tick_params(axis='x', labelsize=7)
-    for sep in (len(ROWS) - 1.5, len(ROWS) - 4.5, len(ROWS) - 6.5, len(ROWS) - 8.5):   # between family blocks
+    # between family blocks, and between recursive and direct stage 1 models (as originally drawn)
+    for sep in [y[i] + 0.5 for i in range(1, len(ROWS))
+                if ROWS[i][1] != ROWS[i - 1][1] or (ROWS[i][1] == 'stage1' and ROWS[i][3] != ROWS[i - 1][3])]:
         ax.axhline(sep, color='0.85', lw=0.6, zorder=0)
 axes[0].set_yticks(y, [r[0] for r in ROWS], fontsize=8)
 fig.supxlabel('Test RMSE (m, log scale)', fontsize=10, y=0.07)

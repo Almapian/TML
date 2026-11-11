@@ -5,6 +5,304 @@ recorded here, newest first. Entries say what changed, why, and how it was check
 
 ---
 
+## 2026-11-11: supervisor update rewritten (neural model only)
+
+- **What:** `reports/2026-11-nov-fixes/03_supervisor_summary.md` rewritten in place (old version in git, `4d526c2`) for today's meeting: Richmond added, continuous 0 to 72h model and its two fixes, per-gauge test tables against the dissertation fixed-horizon model, tests that did not help, stage 3 leak fix, a short no-tables section on classical models, improvement ideas, questions. No classical results tables or figures.
+- **Figures:** new `models/plot_supervisor_update.py` (no training) writes `figures/<gauge>_rmse_vs_lead.png` and `figures/<gauge>_forecast_{typical,storm}.png`, neural model, harmonic and observations only. Same issue times as S3.
+- **Numbers:** every number re-read from its source CSV (listed at the foot of the report). Per-gauge tables use `dense_vs_sparse_matched.csv` (test, matched anchors: 199,319 Southend, 192,318 Richmond). The "reduced-resolution" test is the hourly (stride 6) against 10-minute harmonic fit in `utide_option_search.csv`, confirmed with Al. Claims that could not be confirmed from a file were then removed at Al's request: Richmond fault counts, remaining-gap count, usable-window shares, the 'about 3 m' and 'about 1 m' figures, and the 10-minute loss shares. Newly confirmed by computation (no training, not written to outputs/): every selection score from `dense_val_metrics.csv` (Richmond plain skip 0.5906), the ODN offset (0.61 m on every row), Storm Eunice minimum residual within 72h of issue (Southend -1.23 m, Richmond -1.76 m) and the Richmond low-water floor (0.05% of unflagged readings below -1.06 m).
+- **Wording (Al):** differences from the harmonic prediction are no longer called surges, Storm Eunice is no longer named or given as a cause (the 2022-02-17 example is labelled as the dissertation's example date; figures renamed `<gauge>_forecast_20220217.png`, the `_storm` files removed), and the Richmond low-water floor note was dropped.
+- **Test viewed:** existing test tables and single test forecasts of the frozen winner only; no development decision depends on them.
+
+## 2026-11-10 (night): long AR explained, independent checks, AR on the water level
+
+- **What:** `reports/2026-11-nov-fixes/04_long_ar_explained.md` sets out the long AR model step by step (concept, formula, code line), with figures L1 to L3 from the new `models/plot_long_ar_figures.py` (no training).
+- **Independent checks:** new `models/check_long_ar.py` compares three building blocks with independent references. Yule-Walker AR(200) against statsmodels `yule_walker(method='adjusted')`: max difference 1.1e-12. `gappy_acov` against a brute-force pairwise sum: 2.8e-17. `pi_to_weights` against an explicit recursive rollout: 1.7e-16.
+- **AR on the water level directly (no harmonic analysis):** not a new run. The level track was tuned on validation and scored on test in the baselines audit (`ba70745`); this entry re-reads those tables. Test average over the 73 leads:
+  - Southend: AR on level (90 d, Burg) 21.8 cm against AR on residual 20.8 cm; at 16h, 47.8 against 22.9 cm.
+  - Richmond: AR on level (181 d, Burg) 31.3 cm against 29.7 cm; at 16h, 52.2 against 35.6 cm.
+  - Interpretation: long history lets the AR learn the tide itself, whereas 16h cannot resolve the main constituents (the Rayleigh criterion).
+- **Test viewed:** the existing test tables for frozen configs, and single test forecasts in L2 (the same issue times as S3). No development decision depends on them.
+
+## 2026-11-10 (late evening): supervisor summary, history-length explanation and continuous-forecast figures
+
+- **What:** new script `models/plot_supervisor_figures.py` (no training, frozen configs only), writing figures S1 to S4 to `reports/2026-11-nov-fixes/figures/` and their numbers to `outputs/diagnostics_2026-11/supervisor_figs_*.csv`. Two new sections in `reports/2026-11-nov-fixes/03_supervisor_summary.md`, written for a non-ML reader: how much past record the models use (why 30 days and 6 months, and every classical model held to 16h), and what the continuous forecasts look like.
+- **Why the history lengths:** they come from the existing Optuna search on validation (`search_ar_residual_x.csv`, 9 lengths from 16h to 1 year). Best validation score per length, autoregressive surge model: Southend lowest at 30 days (21.15 cm), worse at 1 year (21.72 cm); Richmond falls to 29.55 cm at 30 days and is nearly flat after (lowest 29.28 cm at 180 days), so the 180-day choice is worth only 0.3 cm over 30 days.
+- **Same 16h history, test (already scored in the baselines audit; read again, not re-run):** average over the 73 leads, neural 21.5 cm against ridge 22.3, GP 22.8 and AR 22.9 at Southend; neural 27.9 against ridge 33.4, AR 35.6 and GP 38.5 at Richmond. Level-track 16h models: 45 to 54 cm.
+- **Test viewed:** yes, for the finished configurations only (no development decision depends on it). S3 plots single test forecasts: 2022-02-17 12:00 (Storm Eunice, the dissertation's example date) and, per gauge, the 12:00 issue whose neural 72h RMSE is the test median (Southend 2023-05-25, 15.5 cm; Richmond 2024-02-19, 21.6 cm). S4 scores the neural model (cubic and native) and the AR model at all 433 10-minute leads on hourly test anchors. These match the earlier post-processing numbers (for example, neural cubic at 30 min: 2.8 cm Southend, 7.1 cm Richmond); the AR 10-minute curve on test is new (30 min: 2.5 cm Southend, 8.2 cm Richmond).
+- **Palette:** blue, orange, aqua, yellow; passes the dataviz CVD and normal-vision checks; contrast is relieved by legends and tables.
+
+## 2026-11-10 (evening): review of the overnight results, validation comparison with AR, supervisor summary
+
+### Late candidate at Richmond
+- `dense_v2_skip` Richmond was an optional step (11), so it finished after the Richmond selection (step 08) and the selection file lists it as missing.
+- Re-running the rule with it included (validation only, written to the scratchpad, not to `outputs/`): `dense_v2_skip` scores 0.5906; `dense_v2_skip_wloss` still wins with 0.5722. The winner and the test scoring are unchanged.
+
+### Validation comparison of every candidate with the AR residual baseline (`models/diag_val_vs_ar.py`)
+- What: all dense candidates and the AR residual baseline (frozen config, refit on train) scored on the same validation anchors, mask and targets. No training; validation only. Output: `outputs/diagnostics_2026-11/val_vs_ar_<gauge>.csv`.
+- Check: the dense RMSEs match each variant's `dense_val_metrics.csv` to 4 decimals.
+- Southend, mean RMSE over 73 leads minus AR's (mm): dense 0.3, pad 0.2, skip_wloss 2.3, skip_scaled 4.1, skip 4.2, skip_longmem 3.8. Over 24 to 72h: dense 0.5, pad 0.3, skip 2.6, skip_wloss 3.1, skip_longmem 3.1.
+- Richmond (mm): every candidate beats AR by 24 to 29 (dense -29.2, pad -29.0, skip_wloss -28.7, skip -26.3, skip_scaled -23.9).
+- Long memory closes 0.4 mm of plain skip's 4.2 mm Southend gap over 73 leads, and none over 24 to 72h. This does not support "the classical advantage is the slowly varying mean level" on validation. The Southend gap is much larger on test (6.6 mm for skip_wloss) than on validation (2.3 mm), when the residual drift is also larger (Diagnostic A), so the hypothesis is not ruled out for the test years.
+
+### Supervisor summary
+- `reports/2026-11-nov-fixes/03_supervisor_summary.md`: one page, using numbers from `02_overnight_results.md` (test values already produced by the queue).
+
+**Test viewed for:** nothing new. The summary restates test numbers the queue had already produced.
+
+### Equal-history comparison and AR weight breakdown (no training)
+- `models/diag_val_vs_ar.py --with-parity` adds the AR residual baseline held to 16h (its frozen parity config). Validation, mean RMSE over 73 leads: Southend AR 16h 0.2224, AR 30 days 0.2085, neural (legacy) 0.2088; Richmond AR 16h 0.3389, AR 181 days 0.2893, neural 0.2601. The sqrt-of-mean-MSE summaries reproduce the search's `val_rmse` in `best_configs.json` (0.2115, 0.2254, 0.2929, 0.3434). Output: `outputs/diagnostics_2026-11/val_vs_ar_with_parity_<gauge>.csv`.
+- `models/diag_ar_weights.py`: sums of the AR forecast weights by lag window. At 72h, Southend keeps 0.43 of a sustained offset (0.36 from 22.7h to 30 days back), Richmond 0.91. Output: `outputs/diagnostics_2026-11/ar_weight_windows.csv`.
+- Claude Doc "Classical baselines vs neural networks" updated with three sections (best classical model explained; update against the new neural model; port-authority view) and a summary line. Its incomplete-history figures are from `baseline_incomplete_history.csv` (test, already published in the October audit).
+- **Test viewed for:** nothing new.
+
+## 2026-11-10: overnight queue results (automatic entry)
+
+Queue `scripts/overnight_queue.py` from commit `75d73e2`, started 2026-11-10 00:41. Selection by the amended pre-registered rule; winners {'southend': 'dense_v2_skip_wloss', 'richmond': 'dense_v2_skip_wloss'}.
+
+**Test viewed for:** southend: dense_v2_skip_wloss, richmond: dense_v2_skip_wloss (winner test scoring), the classical baselines re-scored against each winner (test, joint tests), and post-processing on the winner's test predictions. No other variant was scored on test.
+
+Steps:
+- 01_train_skip_wloss_southend: ok
+- 02_train_skip_scaled_southend: ok
+- 03_train_pad_southend: ok
+- 04_train_skip_wloss_richmond: ok
+- 05_train_skip_scaled_richmond: ok
+- 06_train_pad_richmond: ok
+- 07_train_skip_southend: ok
+- 08_select_southend: ok
+- 08_select_richmond: ok
+- 08_testscore_winner_southend: ok (test-scored winner dense_v2_skip_wloss)
+- 08_testscore_winner_richmond: ok (test-scored winner dense_v2_skip_wloss)
+- 09_baselines_vs_winner_southend: ok
+- 09_baselines_vs_winner_richmond: ok
+- 10_postprocess_southend_val: ok
+- 10_postprocess_southend_test: ok
+- 10_postprocess_richmond_val: ok
+- 10_postprocess_richmond_test: ok
+- 11_optional_train_skip_richmond: ok
+- 11_optional_train_skip_longmem_southend: ok
+
+Report: `reports/2026-11-nov-fixes/02_overnight_results.md`. Logs: `logs/overnight_2026-11-10/`.
+
+## 2026-11-10 (about 00:45): overnight queue built, dry-run passed, launched
+
+### Code (commits `2352fae`, `fb967e4`, `a2f2c86`)
+- **Post-processing** (`models/postprocess_hw.py`): the dense correction to UTide is interpolated (linear and cubic) onto all 433 ten-minute leads; high-water and low-water height and timing errors are reported for UTide, native leads, both interpolations and the AR residual baseline at 10-min resolution.
+  - Checked on the legacy dense **validation** predictions, both gauges (`outputs/[richmond/]dense/postprocess/`). Southend high-water height bias goes from -6.7 cm (native leads only) to -3.8 cm (linear) and -3.3 cm (cubic); timing MAE goes from 15.2 to about 5 min. Cubic overshoots between the 10-min and 1h knots (0.074 m vs 0.050 m linear at 30 min).
+  - Richmond low waters are **not scored**: they pile up against a hard floor near -1.0 m ODN (almost none below -1.06 m; summer medians sit on it) and stay within 5 cm for a median 60 min, against 30 min at high water.
+- **dense_v2_skip_longmem**: skip plus 30 daily-mean residuals before the anchor's day (with missing flags), fed into the decoder initial state through a zero-initialised MLP. Smoke check: trains, 6.7 GB.
+- **Queue** (`scripts/overnight_queue.py`): as agreed, in the order recorded in the PR, with selection by the amended rule.
+  - Baselines are re-evaluated against the winner from their saved test forecasts (AR residual reproduction spot check, parity check), plus joint block-bootstrap tests over all 73 leads and over 24 to 72h.
+- Tests: `tests/test_dense_v2.py` 12/12, `test_stage3_windowing.py` 5/5, `test_baselines.py` 12/12.
+
+### Dry run (00:17 to 00:40, `--dry-run`: smoke training, 50 bootstrap reps, 2,000-anchor post-processing)
+- All 19 steps ok, plus the report, commit (`830a88a`), push and PR comment, all from the detached launch. That proves non-interactive git/gh from outside Claude Code.
+- The throwaway report and figures were removed in the next commit. All `*_smoke` models and outputs were deleted.
+
+### Disclosures
+- **Test viewed:**
+  - The joint-test values of the *legacy* dense model against the baselines (Southend, 50 reps) were printed while testing `eval_baselines_vs_dense.py`. Both models' test results were already published.
+  - The dry-run summary printed test RMSE of 8-batch smoke models, which are meaningless and have been deleted.
+  - No configuration choice used either.
+- **Deleted by mistake** during the dry-run cleanup: `outputs/richmond/baselines_smoke/`. This was a gitignored scratch folder from the 31 Oct baseline smoke check, not a result of record.
+
+### Launch
+- `powershell -ExecutionPolicy Bypass -File scripts\launch_queue.ps1`, which starts pythonw through Win32_Process.Create, outside the terminal's process tree.
+- Logs: `logs/overnight_2026-11-10/`. Status: `python scripts/queue_status.py`.
+- Deadline 17:00 Europe/London; hard stop for steps 16:35.
+- ntfy: not configured (no topic given).
+- Power settings checked with powercfg: sleep and hibernate after idle are "never" (AC and DC); **lid close = Sleep (AC and DC)**, which keep-awake does not override, so the lid must stay open.
+
+## 2026-11-10: new variant dense_v2_skip_scaled (lead-scaled skip correction)
+
+- **What.** It is `dense_v2_skip` plus one change: the network's correction at lead k is multiplied by a fixed scale, s_k = (training residual-persistence RMSE at k) / (its mean over the 73 leads). The scale is computed once from the training windows and stored as a buffer in the checkpoint. The loss is unweighted and unchanged.
+- **Why.** In the skip sanity run, the network added a 4.3 cm rms correction at 10 min where persistence is already within 2 cm. Scaling keeps the correction structurally small at short leads (s = 0.089 at 10 min, 0.336 at 1h, 0.987 at 24h, 1.078 at 72h at Southend) without reweighting the loss.
+- **Checks.** `tests/test_dense_v2.py` 8/8, including that a zeroed network still gives residual persistence, the correction is scaled per lead, and the scale round-trips through the state dict.
+- **Run-check.** Southend, 1 epoch (about 460 batches): trains, finite losses and RMSE, 103 s per epoch, peak RAM 6.7 GB. Log: `logs/sanity/southend_dense_v2_skip_scaled_check1.log`. The run-check checkpoint was deleted. No test scoring.
+
+## 2026-11-10: AMENDED pre-registered selection rule (supersedes the rule in the "decisions" entry below)
+
+Written before any full training run of any dense v2 variant. Disclosure: the 2-epoch (skip, pad, skip_wloss) and 1-epoch (skip_scaled run-check) Southend validation sanity numbers had been seen when this was written. They come from undertrained models and are not used as evidence for or against any candidate.
+
+- **Candidates, per gauge (Southend Pier, Richmond Lock):**
+  - the old dense stage 2 (`dense`, existing checkpoint, never retrained);
+  - `dense_v2_skip`;
+  - `dense_v2_skip_wloss`;
+  - `dense_v2_skip_scaled`;
+  - `dense_v2_pad`.
+
+  All except the old model are trained from scratch, with full training and early stopping on each variant's own validation loss. For `dense_v2_skip_wloss` that is its weighted training objective.
+- **Score.** For each of the 73 dense leads h, on validation (2018 to 2020): RMSE_h(candidate) / min(RMSE_h(residual persistence), RMSE_h(UTide alone)). The score is the arithmetic mean of that ratio over all 73 leads. **Lowest score wins**, separately per gauge.
+  - Every RMSE is per lead, over every validation anchor, flagged targets masked, by `training.masked_rmse_mae`.
+  - Candidate RMSE: the `Dense stage 2` rows of `outputs/[richmond/]<variant>/dense_val_metrics.csv`.
+  - Reference RMSEs: the `Residual persistence` and `UTide standalone` rows of the same files. All candidates share the same validation anchors, so these rows are identical across files; the selection script asserts that. The old model's file has no persistence row, so its references come from a v2 file.
+- **Test scoring.** Only the winner per gauge is scored on test (`--score-test`). If the old dense model wins, no new test scoring happens; its test numbers are already published.
+- **Reporting.** Full per-lead validation curves for every candidate go in the report, whatever wins.
+- **If a candidate does not finish** (dropped, crashed or timed out), it is reported as such and the rule is applied to the candidates that did finish.
+
+## 2026-11-10: dense v2 variants (skip, pad, weighted loss): investigation, code, sanity runs
+
+### Why
+The dense model is worse than residual persistence at 10 min. Southend 10-min test RMSE (published) is 0.049 m dense vs 0.017 m sparse, and residual persistence gets 0.020 m. There is also a jump at the last lead (72h).
+
+### Investigation (no bug found)
+- Anchor/lead alignment, target times, the 10-min step, UTide placement and per-lead scaling were all checked on real Southend validation windows; all correct.
+- Loss imbalance confirmed: the 10-min lead is 0.064% (Southend) and 0.154% (Richmond) of the summed validation MSE.
+- 72h: the last BiLSTM step has no later context and no padding. Southend RMSE is flat from 61h to 70h, then jumps (validation 0.2231 / 0.2241 / 0.2279 at 70 / 71 / 72h).
+
+### Code (commits `961a545`, `639d5a4`, `191303f`)
+All variants are registered in `config.DENSE_VARIANTS`, every flag defaults off, and legacy checkpoints load unchanged (no new parameters).
+- `dense_v2_skip`: output = UTide(t+k) + obs(t) - UTide(t) + network correction.
+- `dense_v2_pad`: 3 hourly UTide steps past 72h, from a gap-free grid so anchors are unchanged, excluded from loss and scoring.
+- `dense_v2_skip_wloss`: skip plus the per-lead loss divided by the training residual-persistence MSE (normalised to mean 1).
+- v2 variants do not retrain dense stage 3.
+- `TIDAL_SANITY_EPOCHS=N` gives short runs into `*_sanityN` dirs.
+- Residual persistence is now a scored reference row.
+- Tests: `tests/test_dense_v2.py` 7/7, including "network output zeroed = residual persistence exactly". `test_stage3_windowing.py` 5/5 and `test_baselines.py` 12/12 still pass.
+
+### Sanity runs (Southend, 2 full epochs, validation only)
+`TIDAL_GAUGE=southend TIDAL_DENSE_VARIANT=<v> TIDAL_SANITY_EPOCHS=2 python models/train_dense.py`, logs in `logs/sanity/`, outputs in `outputs/<v>_sanity2/`. The sanity checkpoints were deleted afterwards.
+
+Validation RMSE at 10min / 1h / 24h / 72h (m):
+
+| Model | 10min | 1h | 24h | 72h |
+|---|---|---|---|---|
+| Old dense (fully trained) | 0.0458 | 0.0638 | 0.2182 | 0.2279 |
+| skip | 0.0488 | 0.1032 | 0.2378 | 0.2537 |
+| pad | 0.1517 | 0.1816 | 0.2339 | 0.2455 |
+| skip_wloss | 0.0229 | 0.0909 | 0.2790 | 0.3113 |
+| Residual persistence | 0.0197 | 0.0989 | 0.3128 | 0.3360 |
+
+- **dense_v2_skip fails the success criterion.** Its network adds a 4.3 cm rms correction with +1.3 cm bias at 10 min, because equal per-lead weighting still gives that lead almost no gradient.
+- The weighted loss fixes 10 min but lags at long leads after 2 epochs.
+- Report: `reports/2026-11-nov-fixes/02_dense_v2_sanity.md`.
+
+### Timing and RAM (measured, Southend)
+- Seconds per epoch: 91 to 92 (skip), 101 to 113 (pad), 115 to 122 (skip_wloss).
+- Peak RAM 6.7 GB for all three.
+- Projected full runs: about 53 to 110 min each; queue items 1 to 4 about 4.5h to 7.3h.
+
+### Test
+None of the dense v2 models was scored on test. The 72h table in the report lists the old model's already-published test numbers next to validation.
+
+## 2026-11-10: decisions after the diagnostics; overnight queue plan and pre-registered selection rule
+
+### Disclosure: future leak in the stage 3 discharge and rainfall inputs (dissertation results affected)
+- **What.** In every stage 3 meteo-fusion model trained before 2026-11-09, an anchor on calendar day D used the NRFA daily values dated D. NRFA gauged daily flow is the mean over the 09:00 to 09:00 GMT water day, dated by its start, so the value dated D includes flow up to 09:00 on D+1. The model therefore saw up to 33h of future Kingston discharge. Catchment rainfall used the same mapping; its day convention is unconfirmed but likely the same.
+- **Which dissertation results.** Only the stage 3 **meteo-fusion** model (`TidalSeq2SeqMulti`, with the river branch), at **both Southend Pier and Richmond Lock**:
+  - its RMSE tables and figures;
+  - its SHAP branch attributions (`plot_stage3.py`);
+  - the Southend learning-rate search that chose its hyperparameters, which Richmond then reused.
+- **Not affected.** Every model without river inputs: stage 1, stage 2, stage 3 tide-only, the stage 3 reduced-training ablation (tide-only), the dense models and the classical baselines.
+- **Direction.** The leak gave the model future information, so it **flattered** the affected results rather than hurting them.
+  - Evidence (Richmond, validation): feeding the existing model leak-free river inputs raises its RMSE by 0.003 m at 10 min and 0.011 m at 72h. Source: `outputs/diagnostics_2026-11/B_ablation_val_rmse.csv`.
+  - That is an indicative size only: a model trained with the leak and scored without it is also seeing a shift in its inputs.
+  - Southend was not measured.
+  - The leak does **not** explain the poor Richmond stage 3 short-lead accuracy, which is an epoch-1 checkpoint (see the diagnostics entry below).
+- **Fix.** Commit `46b998b`: river values are used only after their water day has ended (`config.RIVER_AVAILABILITY_LAG_HOURS = 33`, the default). `config.LEGACY_RIVER_LAG_HOURS = 0` is kept **only** to reproduce dissertation numbers. Nothing has been re-scored or retrained with it.
+
+### Decisions (Al, 2026-11-10)
+1. **Richmond stage 3 retrain: deferred, not tonight.** A follow-up needs (a) the validation-scoring change in `train_stage3.py` first and (b) a Richmond-specific hyperparameter search instead of Southend's winners.
+2. **New variant `dense_v2_pad`.** Dense stage 2 with the decoder extended past 72h by **3 hourly steps (73h, 74h, 75h)**, fed UTide at those times. The extra steps are excluded from the loss and from scoring. No skip connection. Trained from scratch, flag-controlled, default off.
+   - Why 3 steps:
+     - It is the convention dense stage 3 already uses (`DENSE_PAD_STEPS = 3`, hourly spacing), so the stage 2 and stage 3 decoders end the same way.
+     - The evidence suggests it is enough to remove most of the edge effect. From 71h to 72h on validation, padded dense stage 3 rises 0.0018 m (Southend) and 0.0005 m (Richmond), against 0.0038 m and 0.0020 m for unpadded dense stage 2 (`outputs/[richmond/]dense/dense_val_metrics.csv`).
+     - 3h is a quarter of an M2 cycle of known-future tide for the backward LSTM pass at 72h.
+     - The decoder grows from 73 to 76 steps, about 4% more compute.
+   - The padding UTide must come from the extended reconstruction, not from gauge rows, so the anchor set stays identical to the legacy model's.
+3. **NRFA alignment.** The legacy mapping stays as an option for reproducing dissertation numbers only; no re-scoring now (recorded above).
+4. **Long-memory variant: low priority**, because dense and AR are level over 24 to 71h. It is the last optional queue item.
+
+### Overnight queue order (Prompt 3)
+1. dense_v2_skip, Southend
+2. dense_v2_skip, Richmond
+3. dense_v2_pad, Southend
+4. dense_v2_pad, Richmond
+
+Steps 1 to 4: all trained from scratch, validation scoring only.
+
+5. Select the winner per gauge by the rule below; test-score only the winner.
+6. Baseline re-evaluation against the winner (with the joint tests).
+7. Interpolation and high-water post-processing for the winner.
+8. Optional if time: dense_v2_skip_wloss Southend, then dense_v2_skip_longmem Southend (validation only).
+9. Always: report, commit, push, PR comment.
+
+Combining skip and pad is not queued until both have been seen individually.
+
+### Pre-registered selection rule (written 2026-11-10, before any dense_v2 variant has been trained or scored)
+**Superseded** by the amended rule at the top of this file (same day, before any full run).
+- **Candidates:** `dense_v2_skip` and `dense_v2_pad`, separately per gauge (Southend Pier, Richmond Lock).
+- **Metric:** the arithmetic mean, over all 73 dense leads (10min and 1h to 72h), of the validation RMSE (2018 to 2020) in `outputs/[richmond/]<variant>/dense_val_metrics.csv`, for model `Dense stage 2`. This is per-lead RMSE over every validation anchor, with flagged targets masked, by `training.masked_rmse_mae`.
+- **Winner:** the candidate with the lower metric. Only the winner is scored on test (`--score-test`); the loser's test numbers are never computed.
+
+## 2026-11-10: diagnostics A (bias decomposition) and B (stage 3 at Richmond); river leak fix
+
+### Why
+PR item (a): test whether the AR residual baseline's 72h advantage at Southend comes from a slowly varying mean offset. PR item (b): find out why Richmond stage 3 (meteo fusion) is about 3.5x worse than its tide-only ablation at 10 min.
+
+### What ran (no training)
+- `models/diag_bias_decomposition.py`: harmonic baseline bias/std/RMSE per split and calendar year; dense stage 2 vs AR residual per lead.
+  - Inputs: saved dense predictions and AR test predictions.
+  - AR validation predictions were regenerated from the frozen `best_configs.json` through `eval_baselines`' code path (deterministic Yule-Walker on train, no search). They reproduce the saved test predictions to 2.4e-7 m.
+- `models/diag_stage3_richmond.py`: the existing Richmond stage 3 checkpoints were loaded and scored on validation, with each input replaced by its training mean, plus an input audit and a sanity plot. The checkpoints' validation MSE reproduces the training history (0.08981 meteo fusion, 0.07639 tide-only).
+- Outputs: `outputs/diagnostics_2026-11/`. Report and figures: `reports/2026-11-nov-fixes/01_diagnostics.md`.
+
+### Findings
+- Southend 72h gap, dense stage 2 minus AR: 0.0053 m (validation) and 0.0125 m (test).
+  - A constant bias explains 15% / 22% of it; a calendar-month offset explains 55% / 33%.
+  - Most of the rest is a dense stage 2 last-lead artefact: test RMSE 0.2300 / 0.2327 / 0.2378 m at 70 / 71 / 72h, with the bias jumping at 72h. Over 24 to 71h the two models differ by 0.0004 m (validation) and 0.0027 m (test).
+- The harmonic residual at Southend drifts: annual mean +0.045 to +0.070 m in 2022 to 2024, against ±0.025 m in training years. At Richmond it is dominated by river-driven swings of ±0.3 to 0.45 m with no trend.
+- Richmond stage 3: the most likely cause is overfitting plus early stopping at epoch 1 (validation loss best at epoch 1 of 11 while training loss halves). No covariate is broken: removing any input makes the model worse. Scalers are Richmond's own, the timezone lag is 0 min in every month, and validation has no missing covariates.
+
+### Code change: river leakage fix (commit `46b998b`)
+- NRFA daily values are 09:00 to 09:00 GMT water-day means dated by their start, but every anchor on day D used the value dated D. That is up to 33h of future river data.
+- New `config.RIVER_AVAILABILITY_LAG_HOURS = 33` (the default) and `LEGACY_RIVER_LAG_HOURS = 0`, which reproduces the old mapping for existing checkpoints. Test: `tests/test_stage3_windowing.py` (5/5); `tests/test_baselines.py` still passes 12/12.
+- Nothing retrained. Fed leak-free inputs, the existing Richmond meteo-fusion model loses 0.003 m (10 min) and 0.011 m (72h) on validation.
+- Frozen-script note: `train_stage3.py` / `plot_stage3.py` now default to the leak-free mapping. Re-scoring the existing stage 3 checkpoints exactly needs the legacy lag.
+- Dense stage 3 tide-only uses no river values. Only its valid-anchor mask moves, by about 1.4 days at the start of the record (training windows only).
+
+### Test disclosure
+Diagnostic A computed and displayed **test** RMSE, bias and std for the harmonic baseline, dense stage 2 and the AR residual baseline, at the user's request. All three models' test results were already published. Diagnostic B used validation only; its timezone check uses the whole record but scores no model. No configuration was chosen using these test numbers.
+
+## 2026-11-09: legacy dense models scored on validation (comparison baseline)
+
+### Why
+New dense variants are developed on validation, so the existing dense models need validation numbers to compare against.
+
+### Run
+- `python models/run_gauge.py --pipeline dense --gauge richmond --gauge southend` (validation only), 2.7 min (Richmond) and 2.8 min (Southend). Console log: `logs/dense_legacy_val_scoring_console.log`.
+- Inference only: every checkpoint was loaded and left as-is, and no training ran.
+- New files only: `outputs/[richmond/]dense/dense_val_{metrics.csv,vs_sparse_matched.csv,predictions_stage2.npz,predictions_stage3_tideonly.npz}`, plus `logs/<gauge>/dense/run_state_val.json`; `train_dense.log` was appended to. 124 pre-existing legacy files had identical SHA-256 hashes before and after.
+
+### Check
+The mean squared validation RMSE over the 73 leads (scaled units) equals each model's best validation loss in `dense_history.json`, to 5 decimal places: Richmond 0.03367 (stage 2) and 0.03389 (stage 3 tide-only); Southend 0.01807 and 0.01808.
+
+### Results
+Table and discussion: `reports/2026-11-09-dense-legacy-validation/README.md`. Dense stage 2 validation RMSE at 10min: Richmond 0.0880 m, Southend 0.0458 m.
+
+### Test disclosure
+The report shows the **published** test numbers (`dense_metrics.csv`, 2026-10-29) next to the new validation ones, at the user's request. No new test scoring was done.
+
+## 2026-11-09: validation-only scoring, dense variants, explicit CPU threads (branch `paper/nov-fixes`)
+
+### Why
+Paper work needs every development decision made on validation. Until now `models/train_dense.py` scored only the test set, at the end of every run, so any new variant would have shown test numbers during development. New variants also need to train from scratch without touching the original dense model, which is the comparison baseline.
+
+### Code
+- `models/train_dense.py` scores **validation (2018 to 2020) by default** and writes `dense_val_metrics.csv`, `dense_val_vs_sparse_matched.csv` and `dense_val_predictions_*.npz`. Validation windows are rebuilt raw from the same split that `prepare_stage2` / `prepare_stage3` use. The matched sparse comparison is also on validation; the sparse models are only loaded for scoring, never as initial weights.
+- Test is scored only with `--score-test` (env `TIDAL_SCORE_TEST=1`). That writes the original test files (`dense_metrics.csv`, `dense_vs_sparse_matched.csv`, `dense_test_predictions_*.npz`, the Feb 2022 example), in the same format `plot_dense.py` and `eval_baselines.py` read. It is reserved for the final scoring of a finished variant (queue step 3, `dense_v2_skip`).
+- Dense variants: `run_gauge.py --variant <name>` (env `TIDAL_DENSE_VARIANT`) writes to `outputs/[<gauge>/]<name>/`, `models/checkpoints/[<gauge>/]<name>/` and `logs/<gauge>/<name>/`, and resumes only from its own `outputs/_resume/` path. The legacy `dense` variant is the default and is score-only: `train_dense.py` refuses to train it if a checkpoint is missing, and refuses `--score-test` for it, so its published test tables are never rewritten.
+- `run_gauge.py --pipeline dense`: `plot_dense` runs only with `--score-test` (its figures are test results). Validation and test runs keep separate state files (`run_state_val.json`, `run_state_test.json`), so the legacy `run_state.json` is left alone. `--score-test` is rejected for other pipelines.
+- `plot_dense.py` reads the variant's directory and adds `_<variant>` to its figure names.
+- `config.NUM_THREADS` (physical cores via psutil, 8 here; override `TIDAL_NUM_THREADS`) is applied by `describe_device()`, so every training script sets `torch.set_num_threads` explicitly.
+- Not changed, by decision: the dissertation-era `train_stage1/2/3.py` score test by default and are frozen. If any of them is retrained later (for example stage 3 at Richmond), the validation-scoring change is applied to that script first.
+
+### Verification
+- Guards: `TIDAL_SCORE_TEST=1` on the legacy variant exits before loading data; `--score-test` with `--pipeline baselines` is rejected; an invalid variant name (`../dense`) is rejected.
+- Smoke run, Richmond: `TIDAL_SMOKE=1 python models/run_gauge.py --pipeline dense --variant dense_smoketest --score-test --gauge richmond`, exit 0 in about 5 min. Both models trained 1 epoch from scratch into the variant's own checkpoint dir. Validation and test files were all written, and the figures went to the variant dir with the variant suffix. Validation anchors: 156,079 dense; matched with sparse 154,351 (stage 2) and 144,415 (stage 3). `CPU threads: 8` was printed.
+- Legacy files (`outputs/[richmond/]dense/`, `models/checkpoints/[richmond/]dense/`, `report_images/`) had unchanged modification times afterwards. The smoke directories were then deleted.
+- **Test disclosure:** the smoke run computed test metrics for the 1-epoch smoke models, to exercise the `--score-test` path. They were not printed to the session or read, and the files were deleted. No decision used them.
+
 ## 2026-10-30: classical baselines (ARIMA, GP, dynamic harmonic, ridge)
 
 ### Why
